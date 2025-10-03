@@ -1,0 +1,15 @@
+[project]
+name = "whisperxmodel"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "python-dotenv>=1.1.1",
+    "whisperx>=3.4.3",
+    "common-schemas"
+
+]
+
+[tool.uv.sources]
+common-schemas = { path = "../../../../libs/common-schemas" }

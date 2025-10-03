@@ -1,0 +1,20 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# own cache folder and generated files
+out/
+outs/
+logs/
+model_cache/
+cache/
+
+# secret files
+.env
