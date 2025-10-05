@@ -24,6 +24,7 @@ class ASRResponse(BaseModel):
     segments: List[Segment] = Field(default_factory=list)
     WordSegments: List[Word] | None = None
     language: str | None = None
+    
 
 # Translate
 class TranslateRequest(BaseModel):
@@ -35,14 +36,25 @@ class TranslateResponse(BaseModel):
     text: str
 
 # TTS
-class TTSRequest(BaseModel):
+
+class SegmentAudioIn(BaseModel):
+    start: float | None = None
+    end: float | None = None
     text: str
-    lang: str
-    voice: str | None = None
-    target_duration_s: float | None = None
-    extra: Dict[str, Any] = Field(default_factory=dict)
+    speaker_id: str | None = None
+    lang: str | None = None
+    audio_prompt_url: str | None = None
+
+class SegmentAudioOut(BaseModel):
+    start: float | None = None
+    end: float | None = None
+    audio_url: str
+    speaker_id: str | None = None
+    lang: str | None = None
+    sample_rate: int | None = None
+class TTSRequest(BaseModel):
+    segments: List[SegmentAudioIn] = Field(default_factory=list)
 
 class TTSResponse(BaseModel):
-    audio_url: str
-    sample_rate: int
-    meta: Dict[str, Any] = Field(default_factory=dict)
+    Segments: List[SegmentAudioOut] = Field(default_factory=list)
+    meta: Dict[str, Any] | None = None
