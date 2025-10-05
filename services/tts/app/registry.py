@@ -11,8 +11,8 @@ class Worker:
 
 WORKERS = {
         "chatterbox": Worker(
-            venv_python=BASE/"envs/chatterbox/.venv/bin/python",
-            runner=BASE/"models/chatterbox/runner.py"
+            venv_python=BASE/"models/chatterboxModel/.venv/bin/python",
+            runner=BASE/"models/chatterboxModel/runner.py"
         ),
     }
 
