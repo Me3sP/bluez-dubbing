@@ -1,16 +1,16 @@
 from fastapi import FastAPI, HTTPException, Query
-from common_schemas.models import TTSRequest, TTSResponse
+from common_schemas.models import TranslateRequest, TranslateResponse
 from .runner_api import call_worker
 
-app = FastAPI(title="tts")
+app = FastAPI(title="translation service", version="0.1.0")
 
 @app.get("/healthz")
 def healthz():
     return {"ok": True}
 
-@app.post("/v1/synthesize", response_model=TTSResponse)
-async def tts_api(req: TTSRequest, model_key: str = Query("chatterbox", description="which TTS model to use")):
+@app.post("/v1/translate", response_model=TranslateResponse)
+async def translate_api(req: TranslateRequest, model_key: str = Query("facebook_m2m100", description="which translation model to use")):
     try:
-        return call_worker(model_key, req, TTSResponse)
+        return call_worker(model_key, req, TranslateResponse)
     except Exception as e:
         raise HTTPException(500, str(e))

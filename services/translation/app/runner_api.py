@@ -4,15 +4,18 @@ from pathlib import Path
 from typing import Type, TypeVar
 from pydantic import BaseModel
 from .registry import get_worker  # maps model_key -> (venv_python, runner_path)
+from shutil import which
 
 T = TypeVar("T", bound=BaseModel)
 
 def call_worker(model_key: str, payload: BaseModel, out_model: type[T]) -> T:
 
     vpy, runner = get_worker(model_key)
+    uv = which("uv")
+    cmd = [uv, "run", runner.name] if uv else [str(vpy), str(runner)]
     cwd = runner.parent
     proc = subprocess.run(
-        [str(vpy), str(runner)],
+        cmd,
         input=payload.model_dump_json().encode("utf-8"),
         capture_output=True,
         cwd=cwd,

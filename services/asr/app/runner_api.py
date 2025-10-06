@@ -12,7 +12,7 @@ def call_worker(model_key: str, payload: BaseModel, out_model: type[T]) -> T:
     venv_python, runner = get_worker(model_key)
     cwd = runner.parent
     uv = shutil.which("uv")
-    cmd = [uv, "run", "python", runner.name] if uv else [str(venv_python), str(runner)]
+    cmd = [uv, "run", runner.name] if uv else [str(venv_python), str(runner)]
 
     proc = subprocess.run(
         cmd,
