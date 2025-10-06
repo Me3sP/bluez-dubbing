@@ -1,0 +1,15 @@
+[project]
+name = "facebook-m2m100model"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "common-schemas",
+    "sentencepiece>=0.2.1",
+    "torch>=2.8.0",
+    "transformers>=4.57.0",
+]
+
+[tool.uv.sources]
+common-schemas = { path = "../../../../libs/common-schemas", editable = true }
