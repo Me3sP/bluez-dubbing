@@ -371,7 +371,7 @@ wheels = [
 [[package]]
 name = "common-schemas"
 version = "0.1.0"
-source = { directory = "../../../../libs/common-schemas" }
+source = { editable = "../../../../libs/common-schemas" }
 dependencies = [
     { name = "pydantic" },
 ]
@@ -2882,7 +2882,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "common-schemas", directory = "../../../../libs/common-schemas" },
+    { name = "common-schemas", editable = "../../../../libs/common-schemas" },
     { name = "python-dotenv", specifier = ">=1.1.1" },
     { name = "whisperx", specifier = ">=3.4.3" },
 ]

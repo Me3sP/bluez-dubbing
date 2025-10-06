@@ -14,12 +14,14 @@ if __name__ == "__main__":
 
     out = TTSResponse()
 
-    workspace_id = str(uuid.uuid4())
-    BASE = Path(__file__).resolve().parents[4]
-    output_base = BASE / "outs" / "tts_outputs" / workspace_id  # matches your repo structure
-    output_base.mkdir(parents=True, exist_ok=True)
+    
 
     with contextlib.redirect_stdout(sys.stderr):
+
+        workspace_id = str(uuid.uuid4())
+        BASE = Path(__file__).resolve().parents[4]
+        output_base = BASE / "outs" / "tts_outputs" / workspace_id  # matches your repo structure
+        output_base.mkdir(parents=True, exist_ok=True)
 
         for i, segment in enumerate(req.segments):
 
@@ -31,7 +33,7 @@ if __name__ == "__main__":
             wav = multilingual_model.generate(segment.text, language_id=segment.lang, audio_prompt_path=segment.audio_prompt_url)
             ta.save(str(output_base / f"seg-{i}.wav"), wav, multilingual_model.sr)
 
-            out.Segments.append(SegmentAudioOut(
+            out.segments.append(SegmentAudioOut(
                 start=segment.start,
                 end=segment.end,
                 audio_url=str(output_base / f"seg-{i}.wav"),
@@ -39,6 +41,11 @@ if __name__ == "__main__":
                 lang=segment.lang,
                 sample_rate=multilingual_model.sr
             ))
+
+            # Save result to file
+            output_file = output_base / "tts_result.json"
+            with open(output_file, 'w') as f:
+                f.write(out.model_dump_json())
 
     sys.stdout.write(out.model_dump_json() + "\n")
     sys.stdout.flush()
