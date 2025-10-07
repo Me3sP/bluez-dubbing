@@ -41,7 +41,8 @@ if __name__ == "__main__":
             )
             
             # Save audio file
-            output_file = workspace_path / f"seg-{i}.wav"
+            output_file = workspace_path / "tts" / f"seg-{i}.wav"
+            output_file.parent.mkdir(parents=True, exist_ok=True)
             ta.save(str(output_file), wav, multilingual_model.sr)
 
             out.segments.append(SegmentAudioOut(

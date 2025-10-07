@@ -161,7 +161,8 @@ async def dub(
             asr_result = ASRResponse(**r.json())
         
         # Save ASR output
-        asr_out = workspace / "asr_result.json"
+        asr_out = workspace / "asr" / "asr_result.json"
+        asr_out.parent.mkdir(exist_ok=True, parents=True)
         with open(asr_out, "w") as f:
             f.write(asr_result.model_dump_json(indent=2))
 
@@ -185,7 +186,8 @@ async def dub(
             tr_result = TranslateResponse(**r.json())
         
         # Save translation output
-        tr_out = workspace / "translation_result.json"
+        tr_out = workspace / "translation" / "translation_result.json"
+        tr_out.parent.mkdir(exist_ok=True, parents=True)
         with open(tr_out, "w") as f:
             f.write(tr_result.model_dump_json(indent=2))
 
@@ -235,7 +237,8 @@ async def dub(
             tts_result = TTSResponse(**r.json())
         
         # Save TTS output
-        tts_out = workspace / "tts_result.json"
+        tts_out = workspace / "tts" / "tts_result.json"
+        tts_out.parent.mkdir(exist_ok=True, parents=True)
         with open(tts_out, "w") as f:
             f.write(tts_result.model_dump_json(indent=2))
 
@@ -277,7 +280,7 @@ async def dub(
             output_path=final_output
         )
 
-        return {
+        final_result = {
             "workspace_id": workspace_id,
             "video_path": str(final_output),
             "audio_path": str(final_audio_path),
@@ -293,6 +296,11 @@ async def dub(
                 "background": str(background_path)
             }
         }
+
+        with open(workspace / "final_result.json", "w") as f:
+            f.write(json.dumps(final_result, indent=2))
+
+        return final_result
 
     except Exception as e:
         raise HTTPException(500, f"Pipeline failed: {str(e)}")
