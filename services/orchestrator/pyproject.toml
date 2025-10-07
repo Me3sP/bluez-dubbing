@@ -5,9 +5,15 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "audio-separator>=0.39.0",
     "common-schemas",
     "fastapi>=0.118.0",
     "httpx>=0.28.1",
+    "librosa>=0.11.0",
+    "onnxruntime>=1.23.0",
+    "pyrubberband>=0.4.0",
+    "scipy>=1.16.2",
+    "soundfile>=0.13.1",
     "uvicorn>=0.37.0",
 ]
 

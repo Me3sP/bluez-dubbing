@@ -28,15 +28,15 @@ if __name__ == "__main__":
             out.segments.append(Segment(start=segment.start, end=segment.end, text=translated_text, speaker_id=segment.speaker_id, lang=req.target_lang))
             out.language = req.target_lang
 
-            workspace_id = str(uuid.uuid4())
-            BASE = Path(__file__).resolve().parents[4]
-            output_base = BASE / "outs" / "translation_outputs" / workspace_id  # matches your repo structure
-            output_base.mkdir(parents=True, exist_ok=True)
+            # workspace_id = str(uuid.uuid4())
+            # BASE = Path(__file__).resolve().parents[4]
+            # output_base = BASE / "outs" / "translation_outputs" / workspace_id  # matches your repo structure
+            # output_base.mkdir(parents=True, exist_ok=True)
 
-            # Save result to file
-            output_file = output_base / "translated_segments_result.json"
-            with open(output_file, 'w') as f:
-                f.write(out.model_dump_json())
+            # # Save result to file
+            # output_file = output_base / "translated_segments_result.json"
+            # with open(output_file, 'w') as f:
+            #     f.write(out.model_dump_json())
 
 
     sys.stdout.write(out.model_dump_json() + "\n")

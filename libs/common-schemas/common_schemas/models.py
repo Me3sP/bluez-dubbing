@@ -55,6 +55,7 @@ class SegmentAudioOut(BaseModel):
     sample_rate: int | None = None
 class TTSRequest(BaseModel):
     segments: List[SegmentAudioIn] = Field(default_factory=list)
+    workspace: str | None = None
 
 class TTSResponse(BaseModel):
     segments: List[SegmentAudioOut] = Field(default_factory=list)

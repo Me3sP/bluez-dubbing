@@ -199,15 +199,15 @@ if __name__ == "__main__":
         # Save output to dedicated workspace
     
         # Create unique workspace
-        workspace_id = str(uuid.uuid4())
-        BASE = Path(__file__).resolve().parents[4]
-        output_dir = BASE / "outs" / "asr_outputs" / workspace_id  # matches your repo structure
-        output_dir.mkdir(parents=True, exist_ok=True)
+        # workspace_id = str(uuid.uuid4())
+        # BASE = Path(__file__).resolve().parents[4]
+        # output_dir = BASE / "outs" / "asr_outputs" / workspace_id  # matches your repo structure
+        # output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Save result to file
-        output_file = output_dir / "asr_result.json"
-        with open(output_file, 'w') as f:
-            f.write(out.model_dump_json())
+        # # Save result to file
+        # output_file = output_dir / "asr_result.json"
+        # with open(output_file, 'w') as f:
+        #     f.write(out.model_dump_json())
 
     
     # Also write to stdout as before
