@@ -13,12 +13,13 @@ class Worker:
 WORKERS = {
     "whisperx": Worker(
         venv_python=BASE/"models/whisperxModel/.venv/bin/python",
-        runner=BASE/"models/whisperxModel/runner.py",
+        runner=[BASE/"models/whisperxModel/runner_0.py",
+                BASE/"models/whisperxModel/runner_1.py"],
     ),
 }
 
-def get_worker(model_key: str) -> tuple[Path, Path]:
+def get_worker(model_key: str, runner_index: int) -> tuple[Path, Path]:
     if model_key not in WORKERS:
         raise KeyError(f"Unknown model_key={model_key}, choose one of {list(WORKERS)}")
     w = WORKERS[model_key]
-    return w.venv_python, w.runner
+    return w.venv_python, w.runner[runner_index]

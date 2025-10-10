@@ -9,6 +9,7 @@ import json
 from scipy import signal
 import pyrubberband as prb
 import os
+import shutil
 
 def rubberband_to_duration(in_wav, target_ms, out_wav):
     """
@@ -230,8 +231,13 @@ def concatenate_audio_simple(audio_files, output_file):
     Returns:
         str: Path to the concatenated audio file
     """
-    if len(audio_files) < 2:
-        raise ValueError("At least 2 audio files are required for concatenation")
+    if len(audio_files) < 1:
+        raise ValueError("At least 1 audio file is required for concatenation")
+    elif len(audio_files) == 1:
+        # Single file: just copy it to output
+        shutil.copy2(audio_files[0], output_file)
+        print(f"Single file copied to: {output_file}")
+        return output_file
     
     # Create temporary file list for ffmpeg concat demuxer
     import tempfile
@@ -267,7 +273,6 @@ def concatenate_audio_simple(audio_files, output_file):
         raise
     finally:
         # Clean up temporary directory
-        import shutil
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 

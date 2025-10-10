@@ -27,8 +27,8 @@ def healthz():
 @app.post("/v1/dub")
 async def dub(
     video_url: str,
-    target_lang: str,
-    source_lang: str | None = None,
+    target_lang: str = "fr",
+    source_lang: str | None = "en",
     sep_model: str = Query("UVR-MDX-NET-Inst_HQ_3.onnx"),
     asr_model: str = Query("whisperx"),
     tr_model: str = Query("facebook_m2m100"),
@@ -151,6 +151,8 @@ async def dub(
                 audio_url=str(vocals_path),
                 language_hint=source_lang
             )
+
+            # Call ASR service for the transcription step without alignement
             r = await client.post(
                 ASR_URL,
                 params={"model_key": asr_model},
@@ -161,13 +163,13 @@ async def dub(
             asr_result = ASRResponse(**r.json())
         
         # Save ASR output
-        asr_out = workspace / "asr" / "asr_result.json"
+        asr_out = workspace / "asr" / "asr_0_result.json"
         asr_out.parent.mkdir(exist_ok=True, parents=True)
         with open(asr_out, "w") as f:
             f.write(asr_result.model_dump_json(indent=2))
 
         # ========== STEP 3: Translation ==========
-        async with httpx.AsyncClient(timeout=300) as client:
+        async with httpx.AsyncClient(timeout=600) as client:
             # Build translation request from ASR segments
 
             tr_req = TranslateRequest(

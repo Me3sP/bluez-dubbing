@@ -15,6 +15,7 @@ outs/
 logs/
 model_cache/
 cache/
+assets/not_keep/
 
 # secret files
 .env

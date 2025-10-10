@@ -8,8 +8,8 @@ from .registry import get_worker
 
 T = TypeVar("T", bound=BaseModel)
 
-def call_worker(model_key: str, payload: BaseModel, out_model: type[T]) -> T:
-    venv_python, runner = get_worker(model_key)
+def call_worker(model_key: str, payload: BaseModel, out_model: type[T], runner_index: int) -> T:
+    venv_python, runner = get_worker(model_key, runner_index)
     cwd = runner.parent
     uv = shutil.which("uv")
     cmd = [uv, "run", runner.name] if uv else [str(venv_python), str(runner)]

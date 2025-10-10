@@ -16,7 +16,6 @@ if __name__ == "__main__":
         
         # Convert workspace string to Path object
         workspace_path = Path(req.workspace)
-        workspace_path.mkdir(parents=True, exist_ok=True)
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
         
