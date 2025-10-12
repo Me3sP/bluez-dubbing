@@ -1,4 +1,4 @@
-import json
+import json, sys, os
 import uuid
 import httpx
 from pathlib import Path
@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException, Query
 from common_schemas.models import *
 from preprocessing.media_separation import separation
 from media_processing.subtitles_handling import write_srt, write_vtt
-from media_processing.audio_processing import rubberband_to_duration, concatenate_audio_simple, get_audio_duration
+from media_processing.audio_processing import rubberband_to_duration, concatenate_audio_simple, get_audio_duration, trim_audio_with_vad
 from media_processing.final_pass import apply_audio_to_video
 import shutil
 import subprocess
@@ -241,6 +241,47 @@ async def dub(
         # Save TTS output
         tts_out = workspace / "tts" / "tts_result.json"
         tts_out.parent.mkdir(exist_ok=True, parents=True)
+        with open(tts_out, "w") as f:
+            f.write(tts_result.model_dump_json(indent=2))
+
+        # ========== STEP 5.5: VAD Trimming - Remove silence after speech ==========
+        vad_dir = workspace / "vad_trimmed"
+        vad_dir.mkdir(exist_ok=True)
+        
+        trimmed_segments = []
+        several_seg = False  # Only one segment per audio file from TTS
+        for i, seg in enumerate(tts_result.segments):
+            original_audio = Path(seg.audio_url)
+
+            if not several_seg:
+                trimmed_audio = vad_dir / f"trimmed_{i}_{original_audio.stem}.wav"
+            else:
+                trimmed_audio = vad_dir
+
+            try:
+                # Trim audio to last voice activity
+                actual_durations, output_files = trim_audio_with_vad(
+                    audio_path=seg.audio_url,
+                    output_path=trimmed_audio,
+                    several_seg=several_seg
+                )
+                
+                # Update segment with trimmed audio path
+                if not several_seg:
+                    seg.audio_url = str(trimmed_audio)
+                else:
+                    seg.audio_url = [ str(f) for f in output_files ]
+                trimmed_segments.append(seg)
+                
+            except Exception as e:
+                # If VAD fails, keep original segment
+                print(f"VAD trimming failed for segment {i}: {e}", file=sys.stderr)
+                trimmed_segments.append(seg)
+        
+        # Update tts_result with trimmed segments
+        tts_result.segments = trimmed_segments
+        
+        # Save updated TTS result with trimmed paths
         with open(tts_out, "w") as f:
             f.write(tts_result.model_dump_json(indent=2))
 

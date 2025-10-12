@@ -49,7 +49,7 @@ class SegmentAudioIn(BaseModel):
 class SegmentAudioOut(BaseModel):
     start: float | None = None
     end: float | None = None
-    audio_url: str
+    audio_url: str | List[str]
     speaker_id: str | None = None
     lang: str | None = None
     sample_rate: int | None = None

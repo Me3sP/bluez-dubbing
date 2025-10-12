@@ -1,6 +1,6 @@
 import subprocess
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Union, Tuple
 import librosa
 import soundfile as sf
 import numpy as np
@@ -10,6 +10,223 @@ from scipy import signal
 import pyrubberband as prb
 import os
 import shutil
+import torch
+import torchaudio
+
+def check_audio_structure(audio_file: str):
+    import torchaudio
+    import torch
+
+    # Load Silero VAD model
+    model, utils = torch.hub.load(
+        repo_or_dir='snakers4/silero-vad',
+        model='silero_vad',
+        force_reload=False,
+        onnx=False
+    )
+    
+    (get_speech_timestamps, _, read_audio, *_) = utils
+    
+    # Read audio file
+    wav = read_audio(audio_file)
+    
+    # Get speech timestamps (returns sample indices by default)
+    speech_timestamps = get_speech_timestamps(
+        wav,
+        model,
+        return_seconds=True  # ← Add this parameter to get seconds instead of samples
+    )
+
+    # Extract speech timestamps
+    for i, segment in enumerate(speech_timestamps):
+        print(f"Speech segment {i}: {segment['start']:.2f}s - {segment['end']:.2f}s")
+
+    # Get the last speech timestamp
+    if speech_timestamps:
+        last_speech_end = speech_timestamps[-1]['end']
+        print(f"\nLast speech ends at: {last_speech_end:.2f}s")
+        
+        # Trim audio to last speech end
+        waveform, sr = torchaudio.load(audio_file)
+        trim_sample = int(last_speech_end * sr) + int(0.1 * sr)  # Add 100ms padding
+        trimmed_waveform = waveform[:, :trim_sample]
+        
+        # Save trimmed audio
+        torchaudio.save('trimmed_output.wav', trimmed_waveform, sr)
+        print(f"Saved trimmed audio (duration: {trim_sample/sr:.2f}s)")
+
+    import matplotlib.pyplot as plt
+
+    signal, fs = torchaudio.load(audio_file)
+    signal = signal.squeeze()
+    time = torch.linspace(0, signal.shape[0]/fs, steps=signal.shape[0])
+
+    plt.figure(figsize=(12, 4))
+    plt.plot(time, signal)
+    plt.xlabel('Time (s)')
+    plt.ylabel('Amplitude')
+    plt.title('Audio Waveform')
+    plt.grid(True)
+    
+    # Mark speech regions
+    if speech_timestamps:
+        for seg in speech_timestamps:
+            plt.axvspan(seg['start'], seg['end'], alpha=0.3, color='green')
+    
+    plt.show()
+
+    from IPython.display import Audio
+    return Audio(audio_file)
+
+
+def trim_audio_with_vad(
+    audio_path: str | Path,
+    output_path: str | Path = "",
+    sampling_rate: int = 16000,
+    max_silence_gap_ms: int = 1000,
+    several_seg: bool = False
+) -> Union[ Tuple[float, str], Tuple[List[float], List[str]] ]:
+    """
+    Trim audio file at the first silence gap longer than max_silence_gap_ms.
+    
+    Args:
+        audio_path: Input audio file path
+        output_path: Output trimmed audio file path (or directory if several_seg=True)
+        sampling_rate: Target sampling rate for VAD model
+        max_silence_gap_ms: Maximum silence gap allowed between speech segments (default: 1000ms)
+        several_seg: If True, save individual speech segments instead of one trimmed file
+    
+    Returns:
+        If several_seg=False: Duration of trimmed audio in seconds
+        If several_seg=True: List of durations for each saved segment
+    """
+    audio_path = Path(audio_path)
+    output_path = Path(output_path)
+    
+    # Auto-add .wav extension if missing and saving single file
+    if not several_seg and not output_path.suffix:
+        output_path = output_path.with_suffix('.wav')
+    
+    # Load Silero VAD model
+    model, utils = torch.hub.load(
+        repo_or_dir='snakers4/silero-vad',
+        model='silero_vad',
+        force_reload=False,
+        onnx=False
+    )
+    
+    (get_speech_timestamps, _, read_audio, *_) = utils
+    
+    # Read audio file
+    wav = read_audio(str(audio_path), sampling_rate=sampling_rate)
+    
+    # Get speech timestamps with return_seconds=True to get time in seconds
+    speech_timestamps = get_speech_timestamps(
+        wav,
+        model,
+        return_seconds=True  # Get timestamps in seconds instead of samples
+    )
+    
+    if not speech_timestamps:
+        # No speech detected, keep original file
+        if audio_path != output_path:
+            import shutil
+            shutil.copy(audio_path, output_path)
+        return 0.0 if not several_seg else []
+    
+    # Load original audio for trimming (preserve original sample rate)
+    waveform, original_sr = torchaudio.load(str(audio_path))
+    
+    # Find first silence gap longer than max_silence_gap_ms
+    max_silence_gap_sec = max_silence_gap_ms / 1000.0
+    cut_index = None
+    
+    for i in range(len(speech_timestamps) - 1):
+        current_end = speech_timestamps[i]['end']
+        next_start = speech_timestamps[i + 1]['start']
+        silence_gap = next_start - current_end
+        
+        if silence_gap > max_silence_gap_sec:
+            # Found a gap longer than threshold - cut here
+            cut_index = i
+            print(f"✂️  Found silence gap of {silence_gap:.2f}s between segments {i} and {i+1}")
+            print(f"   Will use segments 0 to {i}")
+            break
+    
+    # Determine which segments to use
+    if cut_index is None:
+        # No long gap found, use all segments
+        segments_to_use = speech_timestamps
+        print(f"✅ No silence gap > {max_silence_gap_sec:.2f}s found, using all {len(speech_timestamps)} segments")
+    else:
+        # Use segments up to and including the one before the gap
+        segments_to_use = speech_timestamps[:cut_index + 1]
+    
+    if several_seg:
+        # Save individual speech segments
+        # Use output_path as directory (strip extension if present)
+        output_dir = output_path.parent / output_path.stem if output_path.suffix else output_path
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        durations = []
+        output_files = []
+        for i, seg in enumerate(segments_to_use):
+            # Convert timestamps to samples
+            start_sample = int(seg['start'] * original_sr)
+            end_sample = int(seg['end'] * original_sr)
+            
+            # Add small padding (e.g., 50ms on each side)
+            padding_samples = int(0.05 * original_sr)
+            start_sample = max(0, start_sample - padding_samples)
+            end_sample = min(waveform.shape[1], end_sample + padding_samples)
+            
+            # Extract segment
+            segment_waveform = waveform[:, start_sample:end_sample]
+
+            # Get the base name of the audio file (without extension)
+            audio_basename = audio_path.stem
+            segment_file = output_dir / f"{audio_basename}_segment_{i:03d}.wav"
+            # Save segment
+            torchaudio.save(str(segment_file), segment_waveform, original_sr)
+            output_files.append(str(segment_file))
+            
+            duration = segment_waveform.shape[1] / original_sr
+            durations.append(duration)
+            
+            print(f"💾 Saved segment {i}: {segment_file}")
+            print(f"   Duration: {duration:.2f}s ({seg['start']:.2f}s - {seg['end']:.2f}s)")
+        
+        print(f"\n✅ Saved {len(durations)} segments to {output_dir}")
+        print(f"   Total duration: {sum(durations):.2f}s")
+        
+        return durations, output_files
+    
+    else:
+        # Original behavior: save one trimmed file up to cut point
+        cut_point = segments_to_use[-1]['end']
+        
+        # Convert cut point from seconds to samples
+        trim_sample = int(cut_point * original_sr)
+        
+        # Add small padding (e.g., 100ms) to avoid cutting off speech
+        padding_samples = int(0.1 * original_sr)
+        trim_sample = min(trim_sample + padding_samples, waveform.shape[1])
+        
+        # Trim waveform
+        trimmed_waveform = waveform[:, :trim_sample]
+        
+        # Save trimmed audio
+        torchaudio.save(str(output_path), trimmed_waveform, original_sr)
+        
+        # Return duration in seconds
+        duration = trimmed_waveform.shape[1] / original_sr
+        
+        print(f"💾 Saved trimmed audio: {output_path}")
+        print(f"   Original duration: {waveform.shape[1] / original_sr:.2f}s")
+        print(f"   Trimmed duration: {duration:.2f}s")
+        print(f"   Removed: {(waveform.shape[1] / original_sr) - duration:.2f}s")
+
+        return duration, str(output_path)
 
 def rubberband_to_duration(in_wav, target_ms, out_wav):
     """
