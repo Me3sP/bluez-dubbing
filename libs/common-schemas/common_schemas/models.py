@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 from typing import List, Optional, Dict, Any
 
 # ASR
@@ -21,10 +21,12 @@ class Segment(BaseModel):
     speaker_id: str | None = None
     lang: str | None = None
 
+# will serve for both ASR and Translation responses
 class ASRResponse(BaseModel):
     segments: List[Segment] = Field(default_factory=list)
     WordSegments: List[Word] | None = None
     language: str | None = None
+    audio_url: str | None = None  # Optional field for audio link to that transcription
     
 
 # Translate
@@ -33,9 +35,6 @@ class TranslateRequest(BaseModel):
     source_lang: str | None = None
     target_lang: str 
 
-class TranslateResponse(BaseModel):
-    segments: List[Segment] = Field(default_factory=list)
-    language: str | None = None
 
 # TTS
 class SegmentAudioIn(BaseModel):
@@ -60,3 +59,26 @@ class TTSRequest(BaseModel):
 class TTSResponse(BaseModel):
     segments: List[SegmentAudioOut] = Field(default_factory=list)
     meta: Dict[str, Any] | None = None
+
+class SubtitleSegment(BaseModel):
+    """Represents a subtitle segment with timing and text."""
+    start: float
+    end: float
+    text: str
+    lines: List[str]
+    
+    @computed_field
+    @property
+    def duration(self) -> float:
+        return self.end - self.start
+    
+    @computed_field
+    @property
+    def char_count(self) -> int:
+        return len(self.text)
+    
+    @computed_field
+    @property
+    def cps(self) -> float:
+        """Characters per second."""
+        return self.char_count / self.duration if self.duration > 0 else 0

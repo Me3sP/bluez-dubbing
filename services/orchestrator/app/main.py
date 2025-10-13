@@ -5,9 +5,9 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query
 from common_schemas.models import *
 from preprocessing.media_separation import separation
-from media_processing.subtitles_handling import write_srt, write_vtt
-from media_processing.audio_processing import rubberband_to_duration, concatenate_audio_simple, get_audio_duration, trim_audio_with_vad
-from media_processing.final_pass import apply_audio_to_video
+from media_processing.subtitles_handling import build_subtitles_from_asr_result, STYLE_PRESETS
+from media_processing.audio_processing import concatenate_audio, get_audio_duration, trim_audio_with_vad
+from media_processing.final_pass import final
 import shutil
 import subprocess
 
@@ -33,6 +33,8 @@ async def dub(
     asr_model: str = Query("whisperx"),
     tr_model: str = Query("facebook_m2m100"),
     tts_model: str = Query("chatterbox"),
+    mobile_optimized: bool = Query(True, description="Optimize for mobile viewing"),
+    subtitle_style: str = Query("default", description="Subtitle style preset: default, minimal, bold, netflix"),
 ):
     """
     Complete dubbing pipeline:
@@ -163,12 +165,27 @@ async def dub(
             asr_result = ASRResponse(**r.json())
         
         # Save ASR output
-        asr_out = workspace / "asr" / "asr_0_result.json"
-        asr_out.parent.mkdir(exist_ok=True, parents=True)
-        with open(asr_out, "w") as f:
+        asr_out_0 = workspace / "asr" / "asr_0_result.json"
+        asr_out_0.parent.mkdir(exist_ok=True, parents=True)
+        with open(asr_out_0, "w") as f:
             f.write(asr_result.model_dump_json(indent=2))
 
-        # ========== STEP 3: Translation ==========
+
+        # ========== STEP 3: Generate Subtitles ==========
+        subtitles_dir = workspace / "subtitles"
+        subtitles_dir.mkdir(exist_ok=True)
+
+        srt_path_0, vtt_path_0 = build_subtitles_from_asr_result(
+            data=asr_result.model_dump(),
+            output_dir=subtitles_dir,
+            custom_name="original",
+            formats=["srt", "vtt"],
+            mobile_mode=mobile_optimized
+        )
+
+        # style = STYLE_PRESETS.get(subtitle_style, STYLE_PRESETS["default"])
+
+        # ========== STEP 4: Translation ==========
         async with httpx.AsyncClient(timeout=600) as client:
             # Build translation request from ASR segments
 
@@ -185,7 +202,7 @@ async def dub(
             )
             if r.status_code != 200:
                 raise HTTPException(500, f"Translation failed: {r.text}")
-            tr_result = TranslateResponse(**r.json())
+            tr_result = ASRResponse(**r.json())
         
         # Save translation output
         tr_out = workspace / "translation" / "translation_result.json"
@@ -193,24 +210,7 @@ async def dub(
         with open(tr_out, "w") as f:
             f.write(tr_result.model_dump_json(indent=2))
 
-        # ========== STEP 4: Generate Subtitles ==========
-        subtitles_dir = workspace / "subtitles"
-        subtitles_dir.mkdir(exist_ok=True)
         
-        # Prepare subtitle data (use translated segments)
-        subtitle_chunks = [
-            {
-                "start": seg.start,
-                "end": seg.end,
-                "text": seg.text
-            }
-            for seg in tr_result.segments
-        ]
-        
-        srt_path = subtitles_dir / "subtitles.srt"
-        vtt_path = subtitles_dir / "subtitles.vtt"
-        write_srt(subtitle_chunks, srt_path)
-        write_vtt(subtitle_chunks, vtt_path)
 
         # ========== STEP 5: TTS - Synthesize dubbed audio ==========
         async with httpx.AsyncClient(timeout=600) as client:
@@ -285,58 +285,107 @@ async def dub(
         with open(tts_out, "w") as f:
             f.write(tts_result.model_dump_json(indent=2))
 
-        # ========== STEP 6: Audio processing - Resize & align segments ==========
+        # ========== STEP 6: Audio processing - Resize & concatenate segments ==========
         audio_processing_dir = workspace / "audio_processing"
         audio_processing_dir.mkdir(exist_ok=True)
         
-        # Resize TTS segments to match original timing
-        # resized_segments = adjust_audio_speed(
-        #     input_files=tts_result.segments.model_dump_json(),
-        #     output_dir=audio_processing_dir
-        # )
         
-        # Overlay dubbed segments on background
+        # merge dubbed segments
         final_audio_path = audio_processing_dir / "final_dubbed_audio.wav"
-        # overlay_on_background(
-        #     dubbed_segments=resized_segments,
-        #     background_path=background_path,
-        #     output_path=final_audio_path,
-        #     original_duration=get_audio_duration(raw_audio_path)
-        # )
         
-        concatenate_audio_simple(
-            audio_files=[seg.audio_url for seg in tts_result.segments],
+        concatenate_audio(
+            segments=tts_result.segments,
             output_file=final_audio_path,
+            target_duration=get_audio_duration(raw_audio_path)
         )
 
-        rubberband_to_duration(
-            in_wav=str(final_audio_path),
-            target_ms=int(get_audio_duration(raw_audio_path)*1000),
-            out_wav=str(final_audio_path)
+        # ============= STEP 7:WORD ALIGNMENT with ASR on final audio ============
+        # Check if audio is too long
+        final_audio_duration = get_audio_duration(final_audio_path)
+        print(f"Final audio duration: {final_audio_duration:.2f}s", file=sys.stderr)
+        
+        if final_audio_duration > 600:  # 10 minutes
+            print("Warning: Long audio may cause alignment timeout", file=sys.stderr)
+        
+        # Update tr_result audio_url to point to final dubbed audio
+        tr_result.audio_url = str(final_audio_path)
+       
+        # aligned the translated segments with the final audio for better dubbing sync
+        import time
+        
+        alignment_start = time.time()
+        print(f"Starting alignment at {alignment_start}", file=sys.stderr)
+        
+        async with httpx.AsyncClient(timeout=1200) as client:
+            r = await client.post(
+                ASR_URL,
+                params={"model_key": asr_model, "runner_index": 1},
+                json=tr_result.model_dump()
+            )
+            if r.status_code != 200:
+                raise HTTPException(500, f"Second Alignment failed: {r.text}")
+            asr_result = ASRResponse(**r.json())
+        
+        alignment_duration = time.time() - alignment_start
+        print(f"Alignment completed in {alignment_duration:.2f} seconds", file=sys.stderr)
+
+
+        # Save ASR output
+        asr_out_1 = workspace / "asr" / "asr_1_result.json"
+        asr_out_1.parent.mkdir(exist_ok=True, parents=True)
+        with open(asr_out_1, "w") as f:
+            f.write(asr_result.model_dump_json(indent=2))
+
+
+        srt_path_1, vtt_path_1 = build_subtitles_from_asr_result(
+            data=asr_result.model_dump(),
+            output_dir=subtitles_dir,
+            custom_name=f"dubbed_{target_lang}",
+            formats=["srt", "vtt"],
+            mobile_mode=mobile_optimized
         )
-        # ========== STEP 7: Final pass - Replace video audio & burn subtitles ==========
-        final_output = workspace / f"dubbed_video_{target_lang}.mp4"
-        apply_audio_to_video(
+
+        # ========== STEP 8: Final pass - Replace video audio & burn subtitles ==========
+
+        style = STYLE_PRESETS.get(subtitle_style, STYLE_PRESETS["default"])
+        dubbed_path = workspace / f"dubbed_video_{target_lang}.mp4"
+        final_output = workspace / f"dubbed_video_{target_lang}_with_{subtitle_style}_subs.mp4"
+
+
+        print("begining final pass...", file=sys.stderr)
+
+        final(
             video_path=video_url,
             audio_path=final_audio_path,
-            subtitle_path=vtt_path,
-            output_path=final_output
+            dubbed_path=dubbed_path,
+            subtitle_path=vtt_path_1,
+            output_path=final_output,
+            style=style,
+            mobile_optimized=mobile_optimized
         )
 
+        
         final_result = {
             "workspace_id": workspace_id,
-            "video_path": str(final_output),
+            "final_video_path": str(final_output),
             "audio_path": str(final_audio_path),
             "subtitles": {
-                "srt": str(srt_path),
-                "vtt": str(vtt_path)
+            "original": {
+                "srt": str(srt_path_0),
+                "vtt": str(vtt_path_0)
+            },
+            "aligned": {
+                "srt": str(srt_path_1),
+                "vtt": str(vtt_path_1)
+            }
             },
             "intermediate_files": {
-                "asr": str(asr_out),
-                "translation": str(tr_out),
-                "tts": str(tts_out),
-                "vocals": str(vocals_path),
-                "background": str(background_path)
+            "asr_original": str(asr_out_0),
+            "asr_aligned": str(asr_out_1),
+            "translation": str(tr_out),
+            "tts": str(tts_out),
+            "vocals": str(vocals_path),
+            "background": str(background_path)
             }
         }
 

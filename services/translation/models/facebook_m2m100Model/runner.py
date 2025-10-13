@@ -1,5 +1,5 @@
 from transformers import M2M100ForConditionalGeneration, M2M100Tokenizer
-from common_schemas.models import TranslateResponse, TranslateRequest, Segment
+from common_schemas.models import ASRResponse, TranslateRequest, Segment
 import json, uuid, sys, os, contextlib
 import torch
 from pathlib import Path
@@ -8,7 +8,7 @@ if __name__ == "__main__":
 
     req = TranslateRequest(**json.loads(sys.stdin.read()))
 
-    out = TranslateResponse()
+    out = ASRResponse()
 
     
 

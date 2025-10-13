@@ -437,26 +437,214 @@ def link_audio_segments_simple(audio_files, output_file, crossfade_duration=0.5)
         raise
 
 
-def concatenate_audio_simple(audio_files, output_file):
+def concatenate_audio(segments, output_file, target_duration: Optional[float] = None, min_silence_gap=0.02, max_silence_gap=1.0):
     """
-    Simple concatenation of audio files without crossfade using ffmpeg.
+    Concatenate audio segments with intelligent duration adjustment.
     
     Args:
-        audio_files (list): List of paths to audio files to be concatenated
+        segments (list): List of segment dicts with keys: 'audio_url', 'start', 'end'
         output_file (str): Path for the output concatenated audio file
+        target_duration (float, optional): Target duration in seconds. If provided:
+            - Segments longer than expected keep their actual duration
+            - Remaining time is distributed proportionally to other segments
+            - Segments are stretched if needed to fill their allocated time
+            - Silence is added between segments to match target duration
     
     Returns:
         str: Path to the concatenated audio file
     """
-    if len(audio_files) < 1:
-        raise ValueError("At least 1 audio file is required for concatenation")
-    elif len(audio_files) == 1:
-        # Single file: just copy it to output
-        shutil.copy2(audio_files[0], output_file)
-        print(f"Single file copied to: {output_file}")
-        return output_file
+    if len(segments) < 1:
+        raise ValueError("At least 1 segment is required for concatenation")
     
-    # Create temporary file list for ffmpeg concat demuxer
+    # Extract audio files
+    audio_files = [seg.audio_url for seg in segments]
+    
+    # ========== SINGLE SEGMENT CASE ==========
+    if len(segments) == 1:
+        if target_duration is None:
+            shutil.copy2(audio_files[0], output_file)
+            print(f"Single file copied to: {output_file}")
+            return output_file
+        else:
+            print(f"Adjusting single file to target duration: {target_duration:.2f}s")
+            return rubberband_to_duration(audio_files[0], target_duration * 1000, output_file)
+    
+    # ========== NO TARGET DURATION ==========
+    if target_duration is None:
+        return _simple_concat(audio_files, output_file)
+    
+    # ========== ANALYZE SEGMENTS (single pass) ==========
+    print("\n" + "="*60)
+    print("📊 ANALYZING SEGMENTS")
+    print("="*60)
+    
+    segment_info = []
+    total_actual_duration = 0.0
+    total_expected_duration = 0.0
+    
+    for i, seg in enumerate(segments):
+        expected_duration = seg.end - seg.start
+        actual_duration = get_audio_duration(Path(seg.audio_url))
+        is_longer = actual_duration > expected_duration
+        
+        segment_info.append({
+            'index': i,
+            'audio_url': seg.audio_url,
+            'start': seg.start,
+            'end': seg.end,
+            'expected_duration': expected_duration,
+            'actual_duration': actual_duration,
+            'is_longer': is_longer,
+        })
+        
+        total_actual_duration += actual_duration
+        total_expected_duration += expected_duration
+        
+        status = "🔴 LONGER" if is_longer else "🟢 OK"
+        print(f"Segment {i}: {status} | Expected: {expected_duration:.2f}s | Actual: {actual_duration:.2f}s")
+    
+    print(f"\nTotal actual: {total_actual_duration:.2f}s | Expected: {total_expected_duration:.2f}s | Target: {target_duration:.2f}s")
+    
+    # ========== CASE 1: Total actual > target ==========
+    # Need to compress everything to fit
+    if total_actual_duration > target_duration:
+        print(f"\n⚠️  Audio ({total_actual_duration:.2f}s) exceeds target ({target_duration:.2f}s)")
+        print(f"   Compressing by {(total_actual_duration/target_duration):.3f}x")
+        
+        import tempfile
+        temp_dir = Path(tempfile.mkdtemp())
+        try:
+            temp_concat = temp_dir / "temp_concat.wav"
+            _simple_concat(audio_files, str(temp_concat))
+            result = rubberband_to_duration(str(temp_concat), target_duration * 1000, output_file)
+            print("✅ COMPRESSION COMPLETE\n" + "="*60)
+            return result
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+    
+    # ========== CASE 2: Total actual >= total expected ==========
+    # No stretching needed, just add silence to reach target
+    if total_actual_duration >= total_expected_duration:
+        print(f"\n✅ Sum of all segments durations above expected sum of durations but below target")
+        print(f"   Adding silence to reach target: {target_duration - total_actual_duration:.2f}s")
+        
+        processed_files = audio_files
+        total_processed_duration = total_actual_duration
+    
+    # ========== CASE 3: Total actual < total expected ==========
+    # Some segments need stretching
+    else:
+        print(f"\n🔧 Sum of all segments durations below expected sum of durations - applying intelligent stretching")
+        
+        # Separate longer vs normal segments
+        longer_segments = [s for s in segment_info if s['is_longer']]
+        normal_segments = [s for s in segment_info if not s['is_longer']]
+        
+        # Calculate adjustment ratio for normal segments
+        if longer_segments:
+            duration_used_by_longer = sum(s['actual_duration'] for s in longer_segments)
+            expected_duration_of_longer = sum(s['expected_duration'] for s in longer_segments)
+            
+            remaining_target = target_duration - duration_used_by_longer
+            hypothetical_remaining = target_duration - expected_duration_of_longer
+            
+            adjustment_ratio = remaining_target / hypothetical_remaining if hypothetical_remaining > 0 else 1.0
+            
+            print(f"   Longer segments: {len(longer_segments)} (using {duration_used_by_longer:.2f}s)")
+            print(f"   Normal segments: {len(normal_segments)} (ratio: {adjustment_ratio:.3f}x)")
+        else:
+            # All segments below expected - scale proportionally
+            adjustment_ratio = 0.0
+            print(f"   All segments below expected - scaling by {adjustment_ratio:.3f}x")
+        
+        # Process segments
+        import tempfile
+        temp_dir = Path(tempfile.mkdtemp())
+        processed_files = []
+        total_processed_duration = 0.0
+        
+        try:
+            for seg_info in segment_info:
+                if seg_info['is_longer']:
+                    # Keep as-is
+                    processed_files.append(seg_info['audio_url'])
+                    seg_info['final_duration'] = seg_info['actual_duration']
+                    print(f"  ✓ Segment {seg_info['index']}: Keep original ({seg_info['actual_duration']:.2f}s)")
+                else:
+                    # Calculate new expected duration
+                    new_expected = seg_info['expected_duration'] * adjustment_ratio
+                    
+                    if seg_info['actual_duration'] < new_expected:
+                        # Needs stretching
+                        stretched_file = temp_dir / f"stretched_seg_{seg_info['index']}.wav"
+                        rubberband_to_duration(
+                            seg_info['audio_url'],
+                            new_expected * 1000,
+                            str(stretched_file)
+                        )
+                        processed_files.append(str(stretched_file))
+                        seg_info['final_duration'] = new_expected
+                        print(f"  🔄 Segment {seg_info['index']}: Stretch {seg_info['actual_duration']:.2f}s → {new_expected:.2f}s")
+                    else:
+                        # Actual is already sufficient
+                        processed_files.append(seg_info['audio_url'])
+                        seg_info['final_duration'] = seg_info['actual_duration']
+                        print(f"  ✓ Segment {seg_info['index']}: Keep original ({seg_info['actual_duration']:.2f}s)")
+                
+                total_processed_duration += seg_info['final_duration']
+        
+        except Exception as e:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise
+    
+    # ========== ADD WEIGHTED SILENCE ==========
+    silence_needed = target_duration - total_processed_duration
+    
+    if silence_needed > 0:  # Only if meaningful silence is needed
+        print(f"\n🔇 Adding {silence_needed:.2f}s weighted silence")
+        
+        # Calculate original gaps
+        original_gaps = [segments[0].start]  # Before first
+        for i in range(len(segments) - 1):
+            original_gaps.append(segments[i + 1].start - segments[i].end)
+        original_gaps.append(target_duration - segments[-1].end)  # After last
+        
+        total_original_gaps = sum(original_gaps)
+        
+        # Weight silence proportionally
+        if total_original_gaps > 0:
+            silence_gaps = [(gap / total_original_gaps) * silence_needed for gap in original_gaps]
+        else:
+            silence_gaps = [silence_needed / len(original_gaps)] * len(original_gaps)
+        
+        print(f"   Original gaps: {[f'{g:.2f}' for g in original_gaps]}")
+        print(f"   Silence gaps: {[f'{s:.2f}' for s in silence_gaps]}")
+        
+        result = _concat_with_weighted_silence(processed_files, output_file, silence_gaps)
+    
+    # elif abs(silence_needed) < 0.001:
+    #     # Perfect fit
+    #     print(f"\n✅ Perfect fit - no silence needed")
+    #     result = _simple_concat(processed_files, output_file)
+    
+    else:
+        # Should not happen (total > target was handled earlier)
+        print(f"\n⚠️  Warning: Processed duration exceeds target by {-silence_needed:.2f}s")
+        result = _simple_concat(processed_files, output_file)
+    
+    # Cleanup temp directory if it exists
+    if 'temp_dir' in locals():
+        shutil.rmtree(temp_dir, ignore_errors=True)
+    
+    print("\n" + "="*60)
+    print("✅ CONCATENATION COMPLETE")
+    print("="*60)
+    
+    return result
+
+
+def _simple_concat(audio_files, output_file):
+    """Helper: Simple concatenation without any adjustments"""
     import tempfile
     temp_dir = tempfile.mkdtemp()
     filelist_path = os.path.join(temp_dir, "temp_filelist.txt")
@@ -493,7 +681,90 @@ def concatenate_audio_simple(audio_files, output_file):
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-
+def _concat_with_weighted_silence(audio_files, output_file, silence_gaps):
+    """
+    Helper: Concatenate audio files with weighted silence gaps.
+    
+    Args:
+        audio_files: List of audio file paths
+        output_file: Output file path
+        silence_gaps: List of silence durations. Length should be len(audio_files) + 1
+                     [before_first, between_1_2, between_2_3, ..., after_last]
+    """
+    import tempfile
+    
+    temp_dir = tempfile.mkdtemp()
+    
+    try:
+        # Get sample rate and channels from first audio file
+        probe_cmd = [
+            'ffprobe', '-v', 'error',
+            '-select_streams', 'a:0',
+            '-show_entries', 'stream=sample_rate,channels',
+            '-of', 'json',
+            audio_files[0]
+        ]
+        probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
+        audio_info = json.loads(probe_result.stdout)
+        sample_rate = audio_info['streams'][0]['sample_rate']
+        channels = audio_info['streams'][0]['channels']
+        
+        # Create silence files for each gap
+        silence_files = []
+        for i, silence_duration in enumerate(silence_gaps):
+            if silence_duration > 0.001:  # Only create if > 1ms
+                silence_file = os.path.join(temp_dir, f"silence_{i}.wav")
+                silence_cmd = [
+                    'ffmpeg', '-y',
+                    '-f', 'lavfi',
+                    '-i', f'anullsrc=channel_layout={"stereo" if channels == 2 else "mono"}:sample_rate={sample_rate}',
+                    '-t', str(silence_duration),
+                    silence_file
+                ]
+                subprocess.run(silence_cmd, capture_output=True, text=True, check=True)
+                silence_files.append(silence_file)
+            else:
+                silence_files.append(None)
+        
+        # Build file list with weighted silence
+        filelist_path = os.path.join(temp_dir, "filelist.txt")
+        with open(filelist_path, 'w') as f:
+            # Silence before first segment
+            if silence_files[0]:
+                f.write(f"file '{os.path.abspath(silence_files[0])}'\n")
+            
+            # Interleave audio files and silence gaps
+            for i, audio_file in enumerate(audio_files):
+                f.write(f"file '{os.path.abspath(audio_file)}'\n")
+                
+                # Add silence after this segment (if not last segment or if silence after last exists)
+                silence_idx = i + 1
+                if silence_idx < len(silence_files) and silence_files[silence_idx]:
+                    f.write(f"file '{os.path.abspath(silence_files[silence_idx])}'\n")
+        
+        # Concatenate with weighted silence
+        cmd = [
+            'ffmpeg', '-y',
+            '-f', 'concat',
+            '-safe', '0',
+            '-i', filelist_path,
+            '-c', 'copy',
+            output_file
+        ]
+        
+        print(f"Concatenating {len(audio_files)} files with weighted silence...")
+        subprocess.run(cmd, capture_output=True, text=True, check=True)
+        print(f"✅ Successfully concatenated with weighted silence to: {output_file}")
+        
+        return output_file
+        
+    except subprocess.CalledProcessError as e:
+        print(f"Error concatenating with weighted silence: {e}")
+        print(f"FFmpeg stderr: {e.stderr}")
+        raise
+    finally:
+        # Clean up temporary directory
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 def overlay_on_background_librosa(dubbed_segments, background_path: Path, output_path: Path, 
                                    original_duration: float = None, background_volume=0.12):
