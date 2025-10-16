@@ -52,5 +52,5 @@ if __name__ == "__main__":
             language=req["language"],
         )
 
-    sys.stdout.write(out.model_dump_json())
+    sys.stdout.write(json.dumps({"raw": {}, "aligned": out.model_dump()}))
     sys.stdout.flush()

@@ -17,8 +17,8 @@ if __name__ == "__main__":
         # Check if GPU is available
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        model = M2M100ForConditionalGeneration.from_pretrained("facebook/m2m100_1.2B")
-        tokenizer = M2M100Tokenizer.from_pretrained("facebook/m2m100_1.2B")
+        model = M2M100ForConditionalGeneration.from_pretrained("facebook/m2m100_418M")
+        tokenizer = M2M100Tokenizer.from_pretrained("facebook/m2m100_418M")
 
         # Move model to GPU
         model = model.to(device)

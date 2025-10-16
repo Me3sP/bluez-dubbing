@@ -5,5 +5,11 @@ description = "Shared pydantic models"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "jieba>=0.42.1",
+    "konlpy>=0.6.0",
+    "mecab-python3>=1.0.10",
     "pydantic>=2.11.9",
+    "sentencepiece>=0.2.1",
+    "simalign>=0.4",
+    "unidic-lite>=1.0.8",
 ]

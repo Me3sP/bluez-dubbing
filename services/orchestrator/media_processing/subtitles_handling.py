@@ -359,7 +359,7 @@ def build_subtitles_from_asr_result(
     output_dir: Path | str,
     custom_name: Optional[str] = None,
     formats: List[str] = ["srt", "vtt"],
-    mobile_mode: bool = False,  # NEW
+    mobile_mode: bool = True,  # NEW
 ) -> List[str]:
     """
     Build professional subtitles from ASR result JSON.

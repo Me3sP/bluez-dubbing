@@ -622,15 +622,18 @@ def concatenate_audio(segments, output_file, target_duration: Optional[float] = 
         
         result = _concat_with_weighted_silence(processed_files, output_file, silence_gaps)
     
-    # elif abs(silence_needed) < 0.001:
-    #     # Perfect fit
-    #     print(f"\n✅ Perfect fit - no silence needed")
-    #     result = _simple_concat(processed_files, output_file)
-    
     else:
-        # Should not happen (total > target was handled earlier)
-        print(f"\n⚠️  Warning: Processed duration exceeds target by {-silence_needed:.2f}s")
-        result = _simple_concat(processed_files, output_file)
+        # Processed duration exceeds target: compress final concat to exact target
+        over_by = -silence_needed
+        print(f"\n⚠️  Processed duration exceeds target by {over_by:.3f}s → compressing to target")
+        import tempfile
+        temp_dir2 = Path(tempfile.mkdtemp())
+        try:
+            temp_concat = temp_dir2 / "temp_concat.wav"
+            _simple_concat(processed_files, str(temp_concat))
+            result = rubberband_to_duration(str(temp_concat), target_duration * 1000, output_file)
+        finally:
+            shutil.rmtree(temp_dir2, ignore_errors=True)
     
     # Cleanup temp directory if it exists
     if 'temp_dir' in locals():

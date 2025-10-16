@@ -8,54 +8,76 @@ from dotenv import load_dotenv
 import gc
 import torch 
 
-
 if __name__ == "__main__":
 
-    req = ASRRequest(**json.loads(sys.stdin.read()))
+    try:
 
-    with contextlib.redirect_stdout(sys.stderr):
+        req = ASRRequest(**json.loads(sys.stdin.read()))
 
-        device = "cuda" # if torch.cuda.is_available() else "cpu"
-        batch_size = 16 # reduce if low on GPU mem
-        compute_type = "float16" # change to "int8" if low on GPU mem (may reduce accuracy)
-        model_dir = "./model_cache/asr/" # save model to local path (optional)
+        with contextlib.redirect_stdout(sys.stderr):
 
-        model = whisperx.load_model("large", device, compute_type=compute_type)
-        audio = whisperx.load_audio(req.audio_url)
+            device = "cuda" # if torch.cuda.is_available() else "cpu"
+            batch_size = 16 # reduce if low on GPU mem
+            compute_type = "float16" # change to "int8" if low on GPU mem (may reduce accuracy)
+            model_dir = "./model_cache/asr/" # save model to local path (optional)
 
-        # 1. Transcribe with original whisper (batched)
-        if req.language_hint:
-            result = model.transcribe(audio, batch_size=batch_size, language=req.language_hint)
-        else:
-            result = model.transcribe(audio, batch_size=batch_size)
+            model = whisperx.load_model("large", device, compute_type=compute_type, download_root=model_dir)
+            audio = whisperx.load_audio(req.audio_url)
 
-        # Preserve language before align overwrites result
-        language = result.get("language")
+            # 1. Transcribe with original whisper (batched)
+            if req.language_hint:
+                result_0 = model.transcribe(audio, batch_size=batch_size, language=req.language_hint)
+            else:
+                result_0 = model.transcribe(audio, batch_size=batch_size)
 
-        # delete model if low on GPU resources
-        gc.collect()
-        torch.cuda.empty_cache()
-        del model
+            # Preserve language before align overwrites result
+            language = result_0.get("language")
 
-        # Align whisper output
-        model_a, metadata = whisperx.load_align_model(language_code=req.language_hint, device=device)
-        result = whisperx.align(result["segments"], model_a, metadata, audio, device, return_char_alignments=False)
+            # delete model if low on GPU resources
+            gc.collect()
+            torch.cuda.empty_cache()
+            del model
 
-        # delete model if low on GPU resources
-        del audio
-        gc.collect()
-        torch.cuda.empty_cache()
-        del model_a
+            # Align whisper output
+            model_a, metadata = whisperx.load_align_model(language_code=language, device=device)
+            result = whisperx.align(result_0["segments"], model_a, metadata, audio, device, return_char_alignments=False)
 
-        segments_out: list[Segment] = convert_whisperx_result_to_Segment(result)
-        word_segments_out: list[Word] = create_word_segments(result, segments_out)
+            # delete model if low on GPU resources
+            del audio
+            gc.collect()
+            torch.cuda.empty_cache()
+            del model_a
 
-        out = ASRResponse(
-            segments=segments_out,
-            WordSegments=word_segments_out or None,
-            language= language,
-        )
+            # Convert raw result to schema format
+            raw_segments_out: list[Segment] = convert_whisperx_result_to_Segment(result_0)
+            raw_word_segments_out: list[Word] = create_word_segments(result_0, raw_segments_out)
 
-    # Write to stdout as before
-    sys.stdout.write(out.model_dump_json())
-    sys.stdout.flush()
+            raw_output = ASRResponse(
+                segments=raw_segments_out,
+                WordSegments=raw_word_segments_out or None,
+                language=language,
+            )
+
+            # Convert aligned result to schema format
+            aligned_segments_out: list[Segment] = convert_whisperx_result_to_Segment(result)
+            aligned_word_segments_out: list[Word] = create_word_segments(result, aligned_segments_out)
+
+            aligned_output = ASRResponse(
+                segments=aligned_segments_out,
+                WordSegments=aligned_word_segments_out or None,
+                language=language,
+            )
+
+        # Write to stdout as JSON with both raw and aligned results
+        output_data = {
+            "raw": raw_output.model_dump(),
+            "aligned": aligned_output.model_dump()
+        }
+        sys.stdout.write(json.dumps(output_data, indent=2) + "\n")
+        sys.stdout.flush()
+
+    except Exception as e:
+        # Write error to stderr and exit with error code
+        error_data = {"error": str(e), "type": type(e).__name__}
+        sys.stderr.write(f"❌ ASR Runner Error: {json.dumps(error_data, indent=2)}\n")
+        sys.exit(1)

@@ -27,7 +27,10 @@ class ASRResponse(BaseModel):
     WordSegments: List[Word] | None = None
     language: str | None = None
     audio_url: str | None = None  # Optional field for audio link to that transcription
-    
+
+class ASRResultWrapper(BaseModel):
+    raw: ASRResponse | None = None
+    aligned: ASRResponse
 
 # Translate
 class TranslateRequest(BaseModel):

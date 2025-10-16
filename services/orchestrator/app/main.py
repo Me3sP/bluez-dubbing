@@ -10,6 +10,7 @@ from media_processing.audio_processing import concatenate_audio, get_audio_durat
 from media_processing.final_pass import final
 import shutil
 import subprocess
+from common_schemas.utils import TranslationSegmentAligner, ProportionalAligner
 
 app = FastAPI(title="orchestrator")
 
@@ -34,6 +35,8 @@ async def dub(
     tr_model: str = Query("facebook_m2m100"),
     tts_model: str = Query("chatterbox"),
     mobile_optimized: bool = Query(True, description="Optimize for mobile viewing"),
+    allow_short_translations: bool = Query(True, description="Allow short translations for alignment"),
+    segments_aligner_model: str = Query("default", description="Model for translated segment alignment with the source segments"),
     subtitle_style: str = Query("default", description="Subtitle style preset: default, minimal, bold, netflix"),
 ):
     """
@@ -162,13 +165,37 @@ async def dub(
             )
             if r.status_code != 200:
                 raise HTTPException(500, f"ASR failed: {r.text}")
-            asr_result = ASRResponse(**r.json())
-        
+
+            # Get the response JSON
+            response_data = r.json()
+
+            # 🔍 Debug: Print the actual response structure
+            print(f"🔍 ASR Response keys: {response_data.keys() if isinstance(response_data, dict) else type(response_data)}", file=sys.stderr)
+            print(f"🔍 ASR Response: {json.dumps(response_data, indent=2)[:500]}...", file=sys.stderr)
+
+            # Check if response has expected structure
+            if not isinstance(response_data, dict):
+                raise HTTPException(500, f"ASR returned invalid response type: {type(response_data)}")
+
+            if "raw" not in response_data:
+                raise HTTPException(500, f"ASR response missing 'raw' key. Available keys: {list(response_data.keys())}")
+
+            if "aligned" not in response_data:
+                raise HTTPException(500, f"ASR response missing 'aligned' key. Available keys: {list(response_data.keys())}")
+
+            raw_asr_result = ASRResponse(**response_data["raw"])
+            aligned_asr_result = ASRResponse(**response_data["aligned"])
+                    
         # Save ASR output
-        asr_out_0 = workspace / "asr" / "asr_0_result.json"
-        asr_out_0.parent.mkdir(exist_ok=True, parents=True)
-        with open(asr_out_0, "w") as f:
-            f.write(asr_result.model_dump_json(indent=2))
+        asr_out_0_0 = workspace / "asr" / "asr_0_result.json"
+        asr_out_0_0.parent.mkdir(exist_ok=True, parents=True)
+        with open(asr_out_0_0, "w") as f:
+            f.write(raw_asr_result.model_dump_json(indent=2))
+
+        asr_out_0_1 = workspace / "asr" / "asr_0_aligned_result.json"
+        asr_out_0_1.parent.mkdir(exist_ok=True, parents=True)
+        with open(asr_out_0_1, "w") as f:
+            f.write(aligned_asr_result.model_dump_json(indent=2))
 
 
         # ========== STEP 3: Generate Subtitles ==========
@@ -176,22 +203,20 @@ async def dub(
         subtitles_dir.mkdir(exist_ok=True)
 
         srt_path_0, vtt_path_0 = build_subtitles_from_asr_result(
-            data=asr_result.model_dump(),
+            data=aligned_asr_result.model_dump(),
             output_dir=subtitles_dir,
             custom_name="original",
             formats=["srt", "vtt"],
             mobile_mode=mobile_optimized
         )
 
-        # style = STYLE_PRESETS.get(subtitle_style, STYLE_PRESETS["default"])
-
         # ========== STEP 4: Translation ==========
         async with httpx.AsyncClient(timeout=600) as client:
             # Build translation request from ASR segments
 
             tr_req = TranslateRequest(
-                segments=asr_result.segments,
-                source_lang=asr_result.language or source_lang,
+                segments=aligned_asr_result.segments if allow_short_translations else raw_asr_result.segments,
+                source_lang=raw_asr_result.language or source_lang,
                 target_lang=target_lang
             )
             
@@ -210,6 +235,78 @@ async def dub(
         with open(tr_out, "w") as f:
             f.write(tr_result.model_dump_json(indent=2))
 
+        # ========== STEP 4.5: Align Translation to Original Segments ==========
+        if (not allow_short_translations) and (len(aligned_asr_result.segments) > 1):  # Only needed if multiple segments
+            
+            # Extract original segment texts
+            source_texts = [seg.text for seg in aligned_asr_result.segments]
+            
+            # Get full translated text
+            full_translation = " ".join([seg.text for seg in tr_result.segments])
+            
+            # Align translation back to original segments
+            # Quick usage
+
+            # Replace lines 209-219 with:
+            if segments_aligner_model in ["proportional", "default"]:
+                aligner = ProportionalAligner()
+                aligned_translations = aligner.align_segments_proportional(
+                    source_segments=source_texts, 
+                    translated_text=full_translation, 
+                    realign_on_sentences=True,
+                    verbose=True
+                )
+            elif segments_aligner_model == "sophisticate":
+                aligner = TranslationSegmentAligner(matching_method="i", allow_merging=True)
+                aligned_translations = aligner.align_segments(source_texts, full_translation, verbose=True)
+
+            else:
+                # Fallback to proportional aligner
+                aligner = ProportionalAligner()
+                aligned_translations = aligner.align_segments_proportional(
+                    source_segments=source_texts, 
+                    translated_text=full_translation, 
+                    realign_on_sentences=True,
+                    verbose=True
+                )
+            # Each segment ready for TTS synthesis
+            Tresponse_segments = ASRResponse()
+
+            # Update translation segments with aligned text
+            for i, seg in enumerate(aligned_translations):
+
+                print("="*40)
+                print("="*20 + " Debug: Sophisticated Aligner Output " + "*"*20)
+                print("="*40)
+
+                print(f"Segment {i}: '{seg.original_text}' → '{seg.translated_text}'")
+                T_segment = Segment(
+                    start=min([aligned_asr_result.segments[j].start for j in seg.source_segment_indices]),
+                    end=max([aligned_asr_result.segments[j].end for j in seg.source_segment_indices]),
+                    text=seg.translated_text,
+                    lang=target_lang
+                )
+                Tresponse_segments.segments.append(T_segment)
+
+            Tresponse_segments.language = target_lang
+            tr_result = Tresponse_segments  # Replace with aligned segments
+
+            print(f"✅ Aligned {len(aligned_translations)} translated segments")
+
+            # Save aligned translation output
+            tr_aligned_origin = workspace / "translation" / "translation_aligned_W_origin_result.json"
+            tr_aligned_origin.parent.mkdir(exist_ok=True, parents=True)
+            with open(tr_aligned_origin, "w") as f:
+                f.write(tr_result.model_dump_json(indent=2))
+        else:
+            # Skip alignment, use translation as-is
+            print(f"⏭️  Skipping alignment (allow_short_translations={allow_short_translations}, segments={len(aligned_asr_result.segments)})")
+            
+            # Still save the translation result
+            tr_aligned_origin = workspace / "translation" / "translation_aligned_W_origin_result.json"
+            tr_aligned_origin.parent.mkdir(exist_ok=True, parents=True)
+            with open(tr_aligned_origin, "w") as f:
+                f.write(tr_result.model_dump_json(indent=2))
         
 
         # ========== STEP 5: TTS - Synthesize dubbed audio ==========
@@ -324,16 +421,16 @@ async def dub(
             )
             if r.status_code != 200:
                 raise HTTPException(500, f"Second Alignment failed: {r.text}")
-            asr_result = ASRResponse(**r.json())
+            asr_result = ASRResponse(**r.json()["aligned"])
         
         alignment_duration = time.time() - alignment_start
         print(f"Alignment completed in {alignment_duration:.2f} seconds", file=sys.stderr)
 
 
         # Save ASR output
-        asr_out_1 = workspace / "asr" / "asr_1_result.json"
-        asr_out_1.parent.mkdir(exist_ok=True, parents=True)
-        with open(asr_out_1, "w") as f:
+        tr_aligned_tts = workspace / "translation" / "translation_aligned_W_dubbedvoice_result.json"
+        tr_aligned_tts.parent.mkdir(exist_ok=True, parents=True)
+        with open(tr_aligned_tts, "w") as f:
             f.write(asr_result.model_dump_json(indent=2))
 
 
@@ -380,9 +477,11 @@ async def dub(
             }
             },
             "intermediate_files": {
-            "asr_original": str(asr_out_0),
-            "asr_aligned": str(asr_out_1),
+            "asr_original": str(asr_out_0_0),
+            "asr_aligned": str(asr_out_0_1),
             "translation": str(tr_out),
+            "translation_aligned_W_origin": str(tr_aligned_origin),
+            "translation_aligned_W_dubbedvoice": str(tr_aligned_tts),
             "tts": str(tts_out),
             "vocals": str(vocals_path),
             "background": str(background_path)
