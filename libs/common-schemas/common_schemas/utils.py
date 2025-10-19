@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass, field
 from typing import List, Tuple, Set 
 import numpy as np
-
+from abc import ABC, abstractmethod
 
 DETERMINERS = {
     # English
@@ -228,41 +228,41 @@ def create_word_segments(result: dict, segments_out: list[Segment]) -> list[Word
                 word_segments_out.extend(s.words)
 
     return word_segments_out
+
+#---- Translation Segment Aligner ----
+
 @dataclass
 class AlignedSegment:
-    original_text: str
-    translated_text: str
-    word_alignments: List[Tuple[int, int]]
+    original_text: str | None = None
+    translated_text: str | None = None
+    word_alignments: List[Tuple[int, int]] | None = None
     confidence: float = 0.0
     is_monotonic: bool = True
     source_segment_indices: List[int] = field(default_factory=list)
     target_indices: List[int] = field(default_factory=list)
+    start: float | None = None
+    end: float | None = None
 
+class Aligner(ABC):
+    """Base utilities shared by alignment strategies."""
 
-class TranslationSegmentAligner:
-    """Fast aligner for dubbing pipelines. Handles CJK and non-monotonic translations."""
-    
-    def __init__(self, model: str = "bert", token_type: str = "bpe", 
-                 matching_method: str = "i", allow_merging: bool = False):
-        self.aligner = SentenceAligner(model=model, token_type=token_type, 
-                                       matching_methods=matching_method)
-        self.matching_method = {"a": "inter", "m": "mwmf", "i": "itermax", 
-                               "f": "fwd", "r": "rev"}[matching_method]
-        self.allow_merging = allow_merging
+    sentence_endings = TERMINATORS
+
+    def __init__(self) -> None:
         self.mecab = self._init_mecab()
-    
+
     def _init_mecab(self):
         try:
             import MeCab
             return MeCab.Tagger()
         except:
             return None
-    
+
     def _is_cjk(self, char: str) -> bool:
         c = ord(char)
         return (0x4E00 <= c <= 0x9FFF or 0x3040 <= c <= 0x30FF or 
                 0xAC00 <= c <= 0xD7AF or 0x3400 <= c <= 0x4DBF)
-    
+
     def _detect_lang(self, text: str) -> str:
         if not text:
             return "other"
@@ -274,354 +274,45 @@ class TranslationSegmentAligner:
                 return "ko"
             return "zh"
         return "other"
-    
+
+    def _is_punctuation(self, token: str) -> bool:
+        return bool(re.match(r'^[^\w\s]+$', token))
+
     def tokenize(self, text: str) -> List[str]:
-        """Fast tokenization with CJK support and contraction handling."""
+
+        """Fast tokenization with CJK support."""
+
         lang = self._detect_lang(text)
-        
-        # Non-CJK: word tokenization with contraction handling
         if lang not in ["ja", "zh", "ko"]:
-            # Modified regex to keep contractions together (e.g., j'ai, I'm, don't)
             return re.findall(r'\w+|[^\w\s]', text)
-        
-        # CJK tokenization with contraction handling
-        tokens, i = [], 0
-        while i < len(text):
+
+        tokens, i, length = [], 0, len(text)
+        while i < length:
             c = text[i]
-            # Latin word (including contractions)
             if c.isalpha() and not self._is_cjk(c):
                 j = i
-                while i < len(text) and (text[i].isalpha() or text[i] in ["'", "'"]) and not self._is_cjk(text[i]):
+                while i < length and (text[i].isalpha() or text[i] in ["'", "'"]) and not self._is_cjk(text[i]):
                     i += 1
-                token = text[j:i]
-                # Clean up trailing apostrophes
-                token = token.rstrip("''")
+                token = text[j:i].rstrip("''")
                 if token:
                     tokens.append(token)
-            # Digit
             elif c.isdigit():
                 j = i
-                while i < len(text) and text[i].isdigit():
+                while i < length and text[i].isdigit():
                     i += 1
                 tokens.append(text[j:i])
-            # CJK
             elif self._is_cjk(c):
                 j = i
-                while i < len(text) and self._is_cjk(text[i]):
+                while i < length and self._is_cjk(text[i]):
                     i += 1
                 tokens.extend(self._tokenize_cjk(text[j:i], lang))
-            # Punctuation (but not apostrophes within words)
             elif c.strip() and re.match(r'[^\w\s]', c) and c not in ["'", "'"]:
                 tokens.append(c)
                 i += 1
-            # Skip whitespace and standalone apostrophes
             else:
                 i += 1
         return tokens
 
-
-    def _reconstruct(self, tokens: List[str]) -> str:
-        """Reconstruct text from tokens, merging contractions and spacing correctly."""
-        if not tokens:
-            return ""
-
-        # Detect language
-        text_sample = "".join(tokens[:10])
-        lang = self._detect_lang(text_sample)
-
-        # Chinese/Japanese: minimal spacing
-        if lang in ["zh", "ja"]:
-            result = ""
-            for i, token in enumerate(tokens):
-                if i > 0:
-                    prev_token = tokens[i - 1]
-                    if (token[0].isalnum() and not self._is_cjk(token[0]) and
-                        (prev_token[-1].isalnum() or self._is_cjk(prev_token[-1]))):
-                        result += " "
-                    elif (prev_token[-1].isalnum() and not self._is_cjk(prev_token[-1]) and
-                          self._is_cjk(token[0])):
-                        result += " "
-                result += token
-            return result.strip()
-
-        # Korean
-        if lang == "ko":
-            return " ".join(tokens)
-
-        # Other languages: merge contractions, then space before non-punctuation
-        result = ""
-        for i, token in enumerate(tokens):
-            if i > 0 and not self._is_punctuation(token) and tokens[i - 1] != '-' and tokens[i - 1] != "'":
-                result += " "
-            result += token
-        return result.strip()
-
-    def _is_punctuation(self, token: str) -> bool:
-        """Check if token is punctuation."""
-        return bool(re.match(r'^[^\w\s]+$', token))
-    
-    def _attach_trailing_punctuation(
-        self, tokens: List[str], boundaries: List[Tuple[int, int]]
-    ) -> List[Tuple[int, int]]:
-        """
-        Ensure punctuation right after a segment end belongs to that segment.
-        Boundaries are non-overlapping [start, end) token spans.
-        """
-        adjusted = []
-        for i, (start, end) in enumerate(boundaries):
-            next_start = boundaries[i + 1][0] if i + 1 < len(boundaries) else len(tokens)
-            j = end
-            while j < next_start and j < len(tokens) and self._is_punctuation(tokens[j]):
-                j += 1
-            adjusted.append((start, j))
-        return adjusted
-
-    def _last_non_punct_index(self, tokens: List[str], start: int, end: int) -> int | None:
-        """Return index of last non-punctuation token in [start, end), or None."""
-        i = end - 1
-        while i >= start:
-            if not self._is_punctuation(tokens[i]):
-                return i
-            i -= 1
-        return None
-
-    def _is_determiner_at(self, tokens: List[str], idx: int) -> Tuple[bool, int]:
-        """
-        Detect a determiner starting at idx. Supports:
-        - single-token determiners (e.g., 'the', 'le', 'de')
-        - simple split forms like ["l", "’"] / ["l", "'"] treated as 2-token determiner
-        Returns (is_determiner, span_len).
-        """
-        if idx < 0 or idx >= len(tokens):
-            return False, 0
-
-        t = tokens[idx].lower()
-
-        # single-token determiner
-        if t in COMMON_DETERMINERS:
-            return True, 1
-
-        # word + apostrophe (idx is word)
-        if idx + 1 < len(tokens) and tokens[idx + 1] in ("'", "’"):
-            combo = (t + tokens[idx + 1]).lower()
-            if combo in COMMON_DETERMINERS:
-                return True, 2
-
-        # apostrophe at idx (rare end-at-idx case): prev + apostrophe
-        if tokens[idx] in ("'", "’") and idx - 1 >= 0:
-            combo = (tokens[idx - 1].lower() + tokens[idx]).lower()
-            if combo in COMMON_DETERMINERS:
-                return True, 2
-
-        return False, 0
-
-    def _realign_on_sentence_boundaries_and_determiners(
-        self,
-        tokens: List[str],
-        boundaries: List[Tuple[int, int]],
-        lang: str,
-        max_look_distance: int = 3,
-        verbose: bool = False
-    ) -> List[Tuple[int, int]]:
-        """
-        - Prefer ending segments at sentence terminators (TERMINATORS[lang])
-        - Keep trailing punctuation with previous segment
-        - Move dangling determiners at end of a segment to the next segment
-        """
-        endings = TERMINATORS.get(lang, TERMINATORS['other'])
-        b = list(boundaries)  # copy
-
-        if verbose:
-            print(f"🔧 Realigning with sentence endings and determiners (look={max_look_distance})")
-
-        for i, (start, end) in enumerate(b):
-            # Extend end forward to include nearby sentence ending
-            if i < len(b) - 1:
-                next_start = b[i + 1][0]
-                j = end
-                while j < len(tokens) and j < next_start and j - end <= max_look_distance:
-                    if tokens[j] in endings:
-                        # include terminator and any following punctuation
-                        k = j + 1
-                        while k < next_start and k < len(tokens) and self._is_punctuation(tokens[k]):
-                            k += 1
-                        end = k
-                        if verbose:
-                            print(f"   seg {i}: extended to {end} on terminator '{tokens[j]}'")
-                        break
-                    j += 1
-
-            # If last non-punct token at end is a determiner, move it to next segment
-            if i < len(b) - 1:
-                last_np = self._last_non_punct_index(tokens, start, end)
-                if last_np is not None:
-                    is_det, span = self._is_determiner_at(tokens, last_np)
-                    if is_det:
-                        # Move the determiner span [last_np, last_np+span) into the next segment
-                        det_start = last_np
-                        det_end_excl = min(end, last_np + span)
-
-                        new_end = max(start, det_start)  # cut current before the determiner
-                        if new_end < end:
-                            if verbose:
-                                det_text = "".join(tokens[det_start:det_end_excl])
-                                print(f"   seg {i}: moved determiner '{det_text}' to seg {i+1}")
-                            # shrink current
-                            end = new_end
-                            # grow next (move its start back to include the determiner)
-                            ns, ne = b[i + 1]
-                            b[i + 1] = (min(det_start, ns), max(ne, det_start))
-
-            b[i] = (start, end)
-
-        return b
-
-    def _compact_and_prevent_empty(
-        self,
-        tokens: List[str],
-        boundaries: List[Tuple[int, int]],
-        source_segments: List[AlignedSegment],
-        verbose: bool = False
-    ) -> List[Tuple[int, int]]:
-        """
-        Prevent empty or punctuation-only target slices.
-        Strategy:
-        - Drop zero-length spans
-        - Merge punctuation-only spans into previous if possible, else next
-        - Ensure boundaries are still non-overlapping and ordered
-        """
-        out: List[Tuple[int, int]] = []
-        for i, (s, e) in enumerate(boundaries):
-            if e <= s:
-                # skip empty; it will be absorbed by neighbor implicitly
-                if verbose:
-                    print(f"   seg {i}: dropped empty slice")
-                continue
-            slice_tokens = tokens[s:e]
-            non_punct = [t for t in slice_tokens if not self._is_punctuation(t)]
-            if not non_punct:
-                # punctuation only: attach to previous if any
-                if out:
-                    ps, pe = out[-1]
-                    out[-1] = (ps, e)  # extend previous to include this punct-only area
-                    if verbose:
-                        print(f"   seg {i}: merged punct-only into previous")
-                else:
-                    # no previous: push into next by creating a placeholder that next will expand from
-                    # Effectively, we skip here; next segment will start earlier by virtue of start continuity
-                    if verbose:
-                        print(f"   seg {i}: leading punct-only dropped (will be covered by next)")
-                continue
-            out.append((s, e))
-
-        # Ensure monotonic non-overlapping, fix accidental overlaps
-        fixed: List[Tuple[int, int]] = []
-        last_end = 0
-        for i, (s, e) in enumerate(out):
-            s = max(s, last_end)
-            e = max(e, s)
-            fixed.append((s, e))
-            last_end = e
-        return fixed
-
-    def _rebuild_segments_from_boundaries(
-        self,
-        original_segments: List[AlignedSegment],
-        boundaries: List[Tuple[int, int]],
-        tgt_tokens: List[str],
-        t2s: Optional[dict] = None
-    ) -> List[AlignedSegment]:
-        """
-        Rebuild AlignedSegment list from new [start, end) boundaries.
-        Keeps source_segment_indices; trims word_alignments to new target range.
-        """
-        rebuilt: List[AlignedSegment] = []
-        for i, (start_pos, end_pos) in enumerate(boundaries):
-            tgt_idx = list(range(start_pos, end_pos))
-            text = self._reconstruct([tgt_tokens[j] for j in tgt_idx])
-
-            # Base from original segment i if exists, else last
-            base = original_segments[min(i, len(original_segments) - 1)]
-
-            # Trim alignments to the new range
-            if base.word_alignments:
-                aligns = [(s, t) for (s, t) in base.word_alignments if start_pos <= t < end_pos]
-            else:
-                aligns = []
-
-            # Confidence: ratio of target tokens that have alignment (if t2s provided)
-            if t2s is not None and tgt_idx:
-                conf = sum(1 for t in tgt_idx if t in t2s) / max(1, len(tgt_idx))
-            else:
-                conf = base.confidence
-
-            rebuilt.append(AlignedSegment(
-                original_text=base.original_text,
-                translated_text=text,
-                word_alignments=aligns,
-                confidence=conf,
-                is_monotonic=base.is_monotonic,
-                source_segment_indices=base.source_segment_indices,
-                target_indices=tgt_idx
-            ))
-        return rebuilt
-
-    def _enforce_punctuation_and_sentence_rules(
-        self,
-        segs: List[AlignedSegment],
-        tgt_tokens: List[str],
-        full_target_text: str,
-        t2s: Optional[dict],
-        verbose: bool = False,
-        max_look_distance: int = 3
-    ) -> List[AlignedSegment]:
-        """
-        Apply unified rules to TranslationSegmentAligner output:
-        - trailing punctuation sticks to previous segment
-        - prefer ending on sentence terminators
-        - move dangling determiners at end to next segment
-        - prevent empty or punctuation-only segments
-        """
-        # 1) Construct coarse contiguous boundaries per segment
-        #    Use min..max+1 over target_indices; skip empty segments for now
-        coarse: List[Tuple[int, int]] = []
-        for s in segs:
-            if s.target_indices:
-                start = min(s.target_indices)
-                end = max(s.target_indices) + 1
-                coarse.append((start, end))
-            else:
-                # placeholder empty span; will be removed/absorbed later
-                coarse.append((0, 0))
-
-        # Make spans monotonic and non-overlapping
-        fixed: List[Tuple[int, int]] = []
-        last_end = 0
-        for (s, e) in coarse:
-            if e <= s:
-                fixed.append((last_end, last_end))
-                continue
-            s = max(s, last_end)
-            e = max(e, s)
-            fixed.append((s, e))
-            last_end = e
-
-        # 2) Attach trailing punctuation to previous segment
-        with_punct = self._attach_trailing_punctuation(tgt_tokens, fixed)
-
-        # 3) Realign on sentence boundaries and determiners
-        lang = self._detect_lang(full_target_text)
-        realigned = self._realign_on_sentence_boundaries_and_determiners(
-            tgt_tokens, with_punct, lang, max_look_distance=max_look_distance, verbose=verbose
-        )
-
-        # 4) Prevent empty / punct-only segments
-        compact = self._compact_and_prevent_empty(tgt_tokens, realigned, segs, verbose=verbose)
-
-        # 5) Rebuild segments with new boundaries
-        rebuilt = self._rebuild_segments_from_boundaries(segs, compact, tgt_tokens, t2s=t2s)
-        return rebuilt
-    
     def _tokenize_cjk(self, text: str, lang: str) -> List[str]:
         if lang == "ja" and self.mecab:
             node = self.mecab.parseToNode(text)
@@ -644,10 +335,489 @@ class TranslationSegmentAligner:
             except:
                 pass
         return [text]
-    
-    def align_segments(self, source_segments: List[str], translated_text: str, 
-                      verbose: bool = False) -> List[AlignedSegment]:
+
+    def _reconstruct(self, tokens: List[str]) -> str:
+        if not tokens:
+            return ""
+        lang = self._detect_lang("".join(tokens[:min(10, len(tokens))]))
+        if lang in ["zh", "ja"]:
+            result = ""
+            for i, token in enumerate(tokens):
+                if i > 0:
+                    prev = tokens[i - 1]
+                    if (token[0].isalnum() and not self._is_cjk(token[0]) and
+                            (prev[-1].isalnum() or self._is_cjk(prev[-1]))):
+                        result += " "
+                    elif (prev[-1].isalnum() and not self._is_cjk(prev[-1]) and
+                          self._is_cjk(token[0])):
+                        result += " "
+                result += token
+            return result.strip()
+        if lang == "ko":
+            return " ".join(tokens)
+        result = ""
+        for i, token in enumerate(tokens):
+            if i > 0 and not self._is_punctuation(token) and tokens[i - 1] not in {'-', "'"}:
+                result += " "
+            result += token
+        return result.strip()
+
+    def _realign_on_sentence_boundaries_and_determiners(
+        self,
+        tokens: List[str],
+        boundaries: List[Tuple[int, int]],
+        lang: str,
+        max_look_distance: int = 3,
+        verbose: bool = False
+    ) -> List[Tuple[int, int]]:
+        endings = set(self.sentence_endings.get(lang, self.sentence_endings["other"]))
+        b = list(boundaries)
+        tok_count = len(tokens)
+
+        if verbose:
+            print(f"🔧 Realigning with sentence endings and determiners (look={max_look_distance})")
+
+        for i, (start, end) in enumerate(b):
+            if i < len(b) - 1 and end < tok_count:
+                q = end
+                while q < tok_count and self._is_punctuation(tokens[q]):
+                    q += 1
+                j = q
+                while j < tok_count and j - q <= max_look_distance:
+                    if tokens[j] in endings:
+                        k = j + 1
+                        while k < tok_count and self._is_punctuation(tokens[k]):
+                            k += 1
+                        end = k
+                        if verbose:
+                            print(f"   seg {i}: extended to {end} on terminator '{tokens[j]}'")
+                        break
+                    j += 1
+
+                if end > start and end <= tok_count and tokens[end - 1].lower() in COMMON_DETERMINERS:
+                    end -= 1
+                    if verbose:
+                        print(f"   seg {i}: moved determiner '{tokens[end]}' to seg {i+1}")
+
+                if end < tok_count and end > start and tokens[end - 1] in {"'", "-"}:
+                    end = min(end + 1, tok_count)
+                    if verbose and end < tok_count:
+                        print(f"   seg {i}: moved punctuation '{tokens[end - 1]}' to seg {i+1}")
+
+            if i > 0 and start > 0 and tokens[start - 1] not in endings:
+                q = start - 1
+                j = q - 1
+                while j >= 0 and q - j <= max_look_distance:
+                    if tokens[j] in endings:
+                        k = j + 1
+                        while k < start and self._is_punctuation(tokens[k]):
+                            k += 1
+                        new_start = min(k, end)
+                        if new_start < start:
+                            if verbose:
+                                print(f"   seg {i}: pulled back to {new_start} on terminator '{tokens[j]}'")
+                            start = new_start
+                        break
+                    j -= 1
+
+            b[i] = (start, end)
+
+            if i > 0:
+                prev_start, _ = b[i - 1]
+                b[i - 1] = (prev_start, max(start, prev_start))
+            if i < len(b) - 1:
+                _, next_end = b[i + 1]
+                b[i + 1] = (end, max(next_end, end))
+
+        return b
+
+    def _assign_timings(
+        self,
+        aligned: List[AlignedSegment],
+        source_metadata: List[dict]
+    ) -> None:
+        src_meta = {
+            idx: (seg["start"], seg["end"])
+            for idx, seg in enumerate(source_metadata)
+            if "start" in seg and "end" in seg
+        }
+
+        buckets: dict[Tuple[int, ...], List[int]] = {}
+        for idx, seg in enumerate(aligned):
+            key = tuple(seg.source_segment_indices)
+            buckets.setdefault(key, []).append(idx)
+
+        for key, positions in buckets.items():
+            valid = [i for i in key if i in src_meta]
+            if not valid:
+                continue
+
+            window_start = min(src_meta[i][0] for i in valid)
+            window_end = max(src_meta[i][1] for i in valid)
+            window_duration = max(0.0, window_end - window_start)
+
+            positions.sort(key=lambda p: aligned[p].target_indices[0] if aligned[p].target_indices else -1)
+            weights = [max(1, len(aligned[p].target_indices)) for p in positions]
+            total = float(sum(weights)) or 1.0
+
+            cursor = window_start
+            for pos, weight in zip(positions, weights):
+                seg_duration = window_duration * weight / total
+                aligned[pos].start = cursor
+                aligned[pos].end = cursor + seg_duration
+                cursor += seg_duration
+
+    @abstractmethod
+    def align_segments(self, source_segments: List[str] | None, translated_text: str,
+                      verbose: bool = False, max_look_distance: int = 3, source_metadata: Optional[List[dict]] = None) -> List[AlignedSegment]:
         """Main alignment method."""
+        pass
+
+
+class SophisticatedAligner(Aligner):
+    """Fast aligner for dubbing pipelines. Handles CJK and non-monotonic translations."""
+    
+    def __init__(self, model: str = "bert", token_type: str = "bpe",
+                 matching_method: str = "i", allow_merging: bool = False):
+        super().__init__()
+        self.aligner = SentenceAligner(model=model, token_type=token_type,
+                                       matching_methods=matching_method)
+        self.matching_method = {"a": "inter", "m": "mwmf", "i": "itermax",
+                                "f": "fwd", "r": "rev"}[matching_method]
+        self.allow_merging = allow_merging
+    
+
+    def _rebuild_segments_from_boundaries(
+        self,
+        original_segments: List[AlignedSegment],
+        source_segments: List[str],
+        boundaries: List[Tuple[int, int]],
+        tgt_tokens: List[str],
+        t2s: Optional[dict] = None
+    ) -> List[AlignedSegment]:
+        
+        def _merge_indices(left: List[int], right: List[int]) -> List[int]:
+            seen, merged = set(), []
+            for idx in left + right:
+                if idx not in seen:
+                    seen.add(idx)
+                    merged.append(idx)
+            return merged
+
+        rebuilt: List[AlignedSegment] = []
+        carry_sources: List[int] = []
+        carry_aligns: List[Tuple[int, int]] = []
+
+        for i, (start_pos, end_pos) in enumerate(boundaries):
+            tgt_idx = list(range(start_pos, end_pos))
+            base = original_segments[min(i, len(original_segments) - 1)]
+
+            if not tgt_idx:
+                if rebuilt:
+                    prev = rebuilt[-1]
+                    prev.source_segment_indices = _merge_indices(prev.source_segment_indices, base.source_segment_indices)
+                    prev.original_text = " ".join(source_segments[j] for j in prev.source_segment_indices) if prev.source_segment_indices else None
+                    if base.word_alignments:
+                        prev.word_alignments = (prev.word_alignments or []) + list(base.word_alignments)
+                else:
+                    carry_sources = _merge_indices(carry_sources, base.source_segment_indices)
+                    if base.word_alignments:
+                        carry_aligns.extend(base.word_alignments)
+                continue
+
+            current_tokens = [tgt_tokens[j] for j in tgt_idx]
+            text = self._reconstruct(current_tokens)
+
+            merged_sources = _merge_indices(carry_sources, base.source_segment_indices)
+            carry_sources = []
+            aligns = [pair for pair in (carry_aligns + (base.word_alignments or []))]
+            carry_aligns = []
+
+            if t2s is not None and tgt_idx:
+                conf = sum(1 for t in tgt_idx if t in t2s) / len(tgt_idx)
+            else:
+                conf = base.confidence
+
+            final_sources = merged_sources if merged_sources else base.source_segment_indices
+            orig_text = " ".join(source_segments[j] for j in final_sources) if final_sources else None
+
+            rebuilt.append(AlignedSegment(
+                original_text=orig_text,
+                translated_text=text,
+                word_alignments=aligns,
+                confidence=conf,
+                is_monotonic=base.is_monotonic,
+                source_segment_indices=final_sources,
+                target_indices=tgt_idx
+            ))
+
+        # just happen if every boundiary encountered in the main loop was empty(normally shouldn't)
+        # but just in case, we handle it
+        if carry_sources and not rebuilt:
+            orig_text = " ".join(source_segments[j] for j in carry_sources) if carry_sources else None
+            rebuilt.append(AlignedSegment(
+                original_text=orig_text,
+                translated_text="",
+                word_alignments=[],
+                confidence=0.0,
+                is_monotonic=True,
+                source_segment_indices=carry_sources,
+                target_indices=[]
+            ))
+
+        return rebuilt
+
+    def _enforce_punctuation_and_sentence_rules(
+        self,
+        segs: List[AlignedSegment],
+        source_segments: List[str],
+        tgt_tokens: List[str],
+        full_target_text: str,
+        t2s: Optional[dict],
+        verbose: bool = False,
+        max_look_distance: int = 3
+    ) -> List[AlignedSegment]:
+        """
+        Apply unified rules to TranslationSegmentAligner output:
+        - trailing punctuation sticks to previous segment
+        - prefer ending on sentence terminators
+        - move dangling determiners at end to next segment
+        - prevent empty or punctuation-only segments
+        """
+        # 1) Construct coarse contiguous boundaries per segment
+        #    Use min..max+1 over target_indices; skip empty segments for now
+
+        # Make spans monotonic and non-overlapping
+        fixed: List[Tuple[int, int]] = []
+        last_end = 0
+        for seg in segs:
+            s = min(seg.target_indices) if seg.target_indices else last_end
+            e = max(seg.target_indices) + 1 if seg.target_indices else last_end
+
+            if e <= s:
+                fixed.append((last_end, last_end))
+                continue
+
+            s = max(s, last_end)
+            e = max(e, s)
+            fixed.append((s, e))
+            last_end = e
+
+        # 2) Realign on sentence boundaries and determiners
+        lang = self._detect_lang(full_target_text)
+        realigned = self._realign_on_sentence_boundaries_and_determiners(
+            tgt_tokens, fixed, lang, max_look_distance=max_look_distance, verbose=verbose
+        )
+
+        # 3) Rebuild segments with new boundaries
+        rebuilt = self._rebuild_segments_from_boundaries(segs, source_segments, realigned, tgt_tokens, t2s=t2s)
+        return rebuilt
+    
+    def _filter_punct(self, tokens: List[str]) -> Tuple[List[str], dict]:
+        clean, idx_map = [], {}
+        for i, t in enumerate(tokens):
+            if not re.match(r'^[^\w\s]+$', t):
+                idx_map[len(clean)] = i
+                clean.append(t)
+        return clean, idx_map
+
+    def _create_segments(self, bounds, src_map, tgt_map, s2t, t2s, is_mono):
+        segments, used = [], set()
+        
+        for idx, (start, end) in enumerate(bounds):
+
+            # original = [src_tokens[tok] for tok in src_map.values() if start <= tok < end]
+            # Get aligned target indices
+            tgt_idx = set()
+            for s in range(start, end):
+                if s in s2t:
+                    tgt_idx.update(s2t[s])
+            tgt_idx -= used
+
+            final = tgt_idx
+            # Determine final indices
+            if not tgt_idx:
+                final = self._fallback(idx, bounds, src_map, tgt_map, used)
+            elif is_mono:
+                final = list(range(min(tgt_idx), max(tgt_idx) + 1))
+            
+            used.update(final)
+            final = sorted(final)
+            
+            # Build segment
+            aligns = [(s, t) for t in final if t in t2s for s in t2s[t] if start <= s < end]
+            conf = sum(1 for i in final if i in t2s) / len(final) if final else 0.0
+            
+            segments.append(AlignedSegment(
+                None, None, aligns, conf, is_mono, [idx], final
+            ))
+        
+        return segments
+    
+    def _merge_matrix(self, segs: List[AlignedSegment]) -> np.ndarray:
+        n = len(segs)
+        if n <= 1:
+            return np.zeros(0, dtype=bool)
+
+        flags = np.zeros(n - 1, dtype=bool)
+        last_non_empty = max((i for i, s in enumerate(segs) if s.target_indices), default=-1)
+
+        empty_run_start = None
+        for i in range(n - 1):
+            cur_idx = segs[i].target_indices
+
+            if not cur_idx:
+                empty_run_start = i if empty_run_start is None else empty_run_start
+                continue
+
+            if empty_run_start is not None:
+                flags[empty_run_start:i] = True
+                empty_run_start = None
+
+            if i >= last_non_empty:
+                break
+
+            max1 = max(cur_idx)
+            for j in range(i + 1, last_non_empty + 1):
+                next_idx = segs[j].target_indices
+                if not next_idx:
+                    continue
+                if max1 >= min(next_idx):
+                    flags[i] = True
+                    break
+
+        if empty_run_start is not None:
+            flags[empty_run_start:] = True
+
+        return flags
+
+    def _handle_reorder(self, segs, src_segs, flags) -> List[AlignedSegment]:
+        result, i = [], 0
+        n = len(segs)
+
+        while i < n:
+            j = i
+            while j < n - 1 and flags[j]:
+                j += 1
+
+            if j > i:
+                group = segs[i:j + 1]
+                if self.allow_merging:
+                    result.append(self._merge(group))
+                else:
+                    result.extend(self._redistribute(group, src_segs))
+                i = j + 1
+            else:
+                result.append(segs[i])
+                i += 1
+
+        return result
+    
+    def _merge(self, group) -> AlignedSegment:
+        src_idx = [i for s in group for i in s.source_segment_indices]
+        
+        tgt_idx = set()
+        for s in group:
+            tgt_idx.update(s.target_indices)
+        
+        
+        aligns = [a for s in group for a in s.word_alignments]
+        conf = sum(s.confidence for s in group) / len(group)
+
+        original = " ".join([s.original_text for s in group if s.original_text]) or None
+
+        return AlignedSegment(original, None, aligns, conf, True, src_idx, sorted(tgt_idx))
+
+    def _redistribute(self, group, src_segs) -> List[AlignedSegment]:
+        non_empty = [seg for seg in group if seg.target_indices]
+        if not non_empty:
+            return group
+
+        all_tgt = sorted({t for seg in non_empty for t in seg.target_indices})
+        lens = [
+            sum(len(src_segs[idx]) for idx in seg.source_segment_indices)
+            for seg in non_empty
+        ]
+        total = sum(lens)
+        splits = [max(1, int(round(length / total * len(all_tgt)))) for length in lens] if total else [len(all_tgt)]
+
+        diff = len(all_tgt) - sum(splits)
+        for offset in range(abs(diff)):
+            if diff > 0:
+                splits[offset % len(splits)] += 1
+            else:
+                k = max(range(len(splits)), key=lambda m: splits[m])
+                if splits[k] > 1:
+                    splits[k] -= 1
+
+        result, pos = [], 0
+        for seg, slen in zip(non_empty, splits):
+            idx = all_tgt[pos:pos + slen] if all_tgt else []
+            result.append(AlignedSegment(seg.original_text, None, seg.word_alignments,
+                                         seg.confidence, seg.is_monotonic,
+                                         seg.source_segment_indices, idx))
+            pos += slen
+
+        return result
+    
+    def _fill_gaps(self, segs, tgt_toks, used, verbose):
+        unused = sorted(set(range(len(tgt_toks))) - used)
+        if not unused:
+            return segs
+        
+        if verbose:
+            print(f"⚠️  Filling {len(unused)} gaps")
+        
+        result = []
+        for i, seg in enumerate(segs):
+
+            # Skip if empty segment. NB: normally shouldn't happen after redistribution or merging
+            if not seg.target_indices:
+                result.append(seg)
+                continue
+
+            idx = seg.target_indices
+            seg_min = 0 if i == 0 else min(idx)
+            
+            # update range to include any tokens in the range since now all segments are monotonic and non-overlapping
+            if i < len(segs) - 1 and segs[i + 1].target_indices:
+                next_min = min(segs[i + 1].target_indices)
+                new_rng = list(range(seg_min, next_min))
+            else:
+                new_rng = list(range(seg_min, len(tgt_toks)))
+            if new_rng:
+                seg = AlignedSegment(seg.original_text, None, seg.word_alignments,
+                                    seg.confidence, seg.is_monotonic, 
+                                    seg.source_segment_indices, new_rng)
+
+            result.append(seg)
+        
+        return result
+
+    def _fallback(self, idx, bounds, src_map, tgt_map, used):
+        start, end = bounds[idx]
+        total_src = len(src_map.values())
+        ratio = len([i for i in range(start, end) if i in src_map]) / total_src if total_src > 0 else 0
+        unused = [i for i in tgt_map.values() if i not in used]
+        return unused[:max(1, int(len(unused) * ratio))]
+
+    def align_segments(self, source_segments: List[str] | None, translated_text: str,
+                      verbose: bool = False, max_look_distance: int = 3, source_metadata: Optional[List[dict]] = None) -> List[AlignedSegment]:
+        
+        """Main alignment method."""
+        
+        if not source_segments and not source_metadata:
+            print ("⚠️  No source segments or metadata provided; Nothing to align.")
+            return None
+        
+        elif not source_segments and source_metadata:
+            source_segments = [seg["text"] for seg in source_metadata if "text" in seg]
+
+        if not source_segments:
+            print("⚠️  No source text available after metadata extraction.")
+            return None
+
+
         if verbose:
             print(f"\n{'='*70}\n🔍 Aligning {len(source_segments)} segments\n{'='*70}")
         
@@ -684,573 +854,81 @@ class TranslationSegmentAligner:
             t2s.setdefault(t, []).append(s)
         
         # Create segments
-        segments = self._create_segments(boundaries, source_segments, s2t, t2s, 
-                                        tgt_tokens, is_mono, verbose)
-        
+        segments = self._create_segments(boundaries, src_map, tgt_map, s2t, t2s,
+                                          is_mono)
+
+        print(f"🧩 Initial segments: {len(segments)}")
+        for i, seg in enumerate(segments):
+            print(f"   seg {i}: '{seg.target_indices}' from source segs {seg.source_segment_indices}")
+
         # Handle reordering
         if not is_mono and len(segments) > 1:
-            merge_mat = self._merge_matrix(segments)
-            if np.any(merge_mat):
-                segments = self._handle_reorder(segments, source_segments, 
-                                               tgt_tokens, merge_mat, verbose)
+            merge_flag = self._merge_matrix(segments)
+            if np.any(merge_flag):
+                segments = self._handle_reorder(segments, source_segments, merge_flag)
+
+            print(f"🔄 After reordering handling: {len(segments)} segments")
+            for i, seg in enumerate(segments):
+                print(f"   seg {i}: '{seg.target_indices}' from source segs {seg.source_segment_indices}")
         
         # Complete coverage
         used = set()
         for seg in segments:
             used.update(seg.target_indices)
         segments = self._fill_gaps(segments, tgt_tokens, used, verbose)
-        segments = self._dedup(segments, tgt_tokens)
 
-        # NEW: enforce punctuation/sentence/determiner rules (unified behavior)
+        print(f"🔄 After gap filling: {len(segments)} segments")
+        for i, seg in enumerate(segments):
+            print(f"   seg {i}: '{seg.target_indices}' from source segs {seg.source_segment_indices}")
+
+
+        #  enforce punctuation/sentence/determiner rules (unified behavior)
         segments = self._enforce_punctuation_and_sentence_rules(
             segs=segments,
+            source_segments=source_segments,
             tgt_tokens=tgt_tokens,
             full_target_text=translated_text,
             t2s=t2s,
-            verbose=verbose
+            verbose=verbose,
+            max_look_distance=max_look_distance
         )
-        
+        if source_metadata:
+            self._assign_timings(segments, source_metadata)
         if verbose:
             print(f"✅ Done: {len(segments)} segments\n{'='*70}\n")
-        
         return segments
-    
-    def _filter_punct(self, tokens: List[str]) -> Tuple[List[str], dict]:
-        clean, idx_map = [], {}
-        for i, t in enumerate(tokens):
-            if not re.match(r'^[^\w\s]+$', t):
-                idx_map[len(clean)] = i
-                clean.append(t)
-        return clean, idx_map
-    
-    def _create_segments(self, bounds, src_segs, s2t, t2s, tgt_toks, is_mono, verbose):
-        segments, used = [], set()
-        
-        for idx, (start, end) in enumerate(bounds):
-            # Get aligned target indices
-            tgt_idx = set()
-            for s in range(start, end):
-                if s in s2t:
-                    tgt_idx.update(s2t[s])
-            tgt_idx -= used
-            
-            # Determine final indices
-            if not tgt_idx:
-                final = self._fallback(idx, bounds, len(tgt_toks), used)
-            elif is_mono:
-                final = list(range(min(tgt_idx), max(tgt_idx) + 1))
-            else:
-                final = sorted(tgt_idx)
-                # Add gaps
-                result = []
-                for i, t in enumerate(final):
-                    result.append(t)
-                    if i < len(final) - 1:
-                        for gap in range(t + 1, final[i + 1]):
-                            if gap not in t2s and gap not in used:
-                                result.append(gap)
-                final = sorted(set(result))
-            
-            used.update(final)
-            final = sorted(final)
-            
-            # Build segment
-            text = self._reconstruct([tgt_toks[i] for i in final])
-            aligns = [(s, t) for t in final if t in t2s for s in t2s[t]]
-            conf = sum(1 for i in final if i in t2s) / len(final) if final else 0.0
-            
-            segments.append(AlignedSegment(
-                src_segs[idx], text, aligns, conf, is_mono, [idx], final
-            ))
-        
-        return segments
-    
-    def _merge_matrix(self, segs: List[AlignedSegment]) -> np.ndarray:
-        n = len(segs)
-        mat = np.zeros((n, n), dtype=bool)
-        
-        for i in range(n):
-            idx1 = [t for _, t in segs[i].word_alignments]
-            if not idx1:
-                continue
-            min1, max1 = min(idx1), max(idx1)
-            
-            for j in range(i + 1, n):
-                idx2 = [t for _, t in segs[j].word_alignments]
-                if not idx2:
-                    continue
-                min2, max2 = min(idx2), max(idx2)
-                
-                if (max1 >= min2 and max2 >= min1) or min1 > min2:
-                    mat[i, j] = True
-        
-        return mat
-    
-    def _handle_reorder(self, segs, src_segs, tgt_toks, mat, verbose):
-        result, i = [], 0
-        n = len(segs)
-        
-        while i < n:
-            merge_idx = [j for j in range(i + 1, n) if mat[i, j]]
-            
-            if merge_idx:
-                last = max(merge_idx)
-                group = segs[i:last + 1]
-                
-                if self.allow_merging:
-                    result.append(self._merge(group, src_segs, tgt_toks))
-                else:
-                    result.extend(self._redistribute(group, src_segs, tgt_toks))
-                
-                i = last + 1
-            else:
-                result.append(segs[i])
-                i += 1
-        
-        return result
-    
-    def _merge(self, group, src_segs, tgt_toks):
-        src_idx = [i for s in group for i in s.source_segment_indices]
-        orig = " ".join(src_segs[i] for i in src_idx)
-        
-        tgt_idx = set()
-        for s in group:
-            tgt_idx.update([t for _, t in s.word_alignments])
-        
-        if tgt_idx:
-            rng = list(range(min(tgt_idx), max(tgt_idx) + 1))
-        else:
-            rng = []
-        
-        text = self._reconstruct([tgt_toks[i] for i in rng])
-        aligns = [a for s in group for a in s.word_alignments]
-        conf = sum(s.confidence for s in group) / len(group)
-        
-        return AlignedSegment(orig, text, aligns, conf, True, src_idx, rng)
-    
-    def _redistribute(self, group, src_segs, tgt_toks):
-        all_tgt = []
-        for s in group:
-            all_tgt.extend([t for _, t in s.word_alignments])
-        
-        rng = list(range(min(all_tgt), max(all_tgt) + 1)) if all_tgt else []
-        
-        # Proportional split
-        lens = [len(src_segs[i]) for s in group for i in s.source_segment_indices]
-        total = sum(lens)
-        splits = [max(1, int(round(l / total * len(rng)))) for l in lens] if total > 0 else [1] * len(group)
-        
-        # Adjust
-        diff = len(rng) - sum(splits)
-        for j in range(abs(diff)):
-            if diff > 0:
-                splits[j % len(splits)] += 1
-            elif splits[j % len(splits)] > 1:
-                splits[j % len(splits)] -= 1
-        
-        result, pos = [], 0
-        for s, slen in zip(group, splits):
-            idx = rng[pos:pos + slen] if rng else []
-            text = self._reconstruct([tgt_toks[i] for i in idx])
-            aligns = [(sr, tg) for sr, tg in s.word_alignments if tg in idx]
-            result.append(AlignedSegment(s.original_text, text, aligns, s.confidence,
-                                        s.is_monotonic, s.source_segment_indices, idx))
-            pos += slen
-        
-        return result
-    
-    def _fill_gaps(self, segs, tgt_toks, used, verbose):
-        unused = sorted(set(range(len(tgt_toks))) - used)
-        if not unused:
-            return segs
-        
-        if verbose:
-            print(f"⚠️  Filling {len(unused)} gaps")
-        
-        result = []
-        for i, seg in enumerate(segs):
-            if not seg.word_alignments:
-                result.append(seg)
-                continue
-            
-            idx = [t for _, t in seg.word_alignments]
-            seg_min, seg_max = min(idx), max(idx)
-            
-            # Find tokens to add
-            if i < len(segs) - 1 and segs[i + 1].word_alignments:
-                next_min = min(t for _, t in segs[i + 1].word_alignments)
-                to_add = [x for x in unused if seg_max < x < next_min]
-            else:
-                to_add = [x for x in unused if x > seg_max]
-            
-            if to_add:
-                new_rng = list(range(min(seg_min, min(to_add)), max(seg_max, max(to_add)) + 1))
-                text = self._reconstruct([tgt_toks[j] for j in new_rng])
-                seg = AlignedSegment(seg.original_text, text, seg.word_alignments,
-                                    seg.confidence, seg.is_monotonic, 
-                                    seg.source_segment_indices, new_rng)
-                unused = [x for x in unused if x not in to_add]
-            
-            result.append(seg)
-        
-        return result
-    
-    def _dedup(self, segs, tgt_toks):
-        claimed = set()
-        for seg in segs:
-            unique = [i for i in seg.target_indices if i not in claimed]
-            claimed.update(unique)
-            seg.target_indices = unique
-            seg.translated_text = self._reconstruct([tgt_toks[i] for i in unique])
-        return segs
-    
-    def _fallback(self, idx, bounds, total_tgt, used):
-        start, end = bounds[idx]
-        total_src = bounds[-1][1]
-        ratio = (end - start) / total_src if total_src > 0 else 0
-        unused = [i for i in range(total_tgt) if i not in used]
-        return unused[:max(1, int(len(unused) * ratio))]
-    
-    
-    def get_translated_segments(self, source_segments: List[str], 
-                               translated_text: str, verbose: bool = False) -> List[str]:
-        """Quick export for TTS pipeline."""
-        return [s.translated_text for s in self.align_segments(source_segments, translated_text, verbose)]
 
-class ProportionalAligner:
+
+class ProportionalAligner(Aligner):
+
     """Simple proportional aligner with smart punctuation-aware boundaries."""
     
     def __init__(self):
-        self.mecab = self._init_mecab()
-        # Sentence-ending punctuation marks for different languages (NOT commas!)
-        self.sentence_endings = TERMINATORS
+        super().__init__()
     
-    def _init_mecab(self):
-        try:
-            import MeCab
-            return MeCab.Tagger()
-        except:
+    def align_segments(self, source_segments: List[str] | None, translated_text: str,
+                      verbose: bool = False, max_look_distance: int = 3, source_metadata: Optional[List[dict]] = None) -> List[AlignedSegment]:
+        
+        """Proportionally allocate target tokens with smart punctuation handling."""
+
+        if not source_segments and not source_metadata:
+            print ("⚠️  No source segments or metadata provided; Nothing to align.")
             return None
-    
-    def _is_cjk(self, char: str) -> bool:
-        """Check if character is CJK (Chinese, Japanese, Korean)."""
-        c = ord(char)
-        return (0x4E00 <= c <= 0x9FFF or  # Chinese
-                0x3040 <= c <= 0x30FF or  # Japanese Hiragana/Katakana
-                0xAC00 <= c <= 0xD7AF or  # Korean Hangul
-                0x3400 <= c <= 0x4DBF)    # Chinese Extension A
-    
-    def _detect_lang(self, text: str) -> str:
-        """Detect if text is CJK or other."""
-        if not text:
-            return "other"
-        cjk_ratio = sum(1 for c in text if self._is_cjk(c)) / len(text)
-        if cjk_ratio > 0.3:
-            if any(0x3040 <= ord(c) <= 0x30FF for c in text):
-                return "ja"
-            if any(0xAC00 <= ord(c) <= 0xD7AF for c in text):
-                return "ko"
-            return "zh"
-        return "other"
-    
-    def _is_punctuation(self, token: str) -> bool:
-        """Check if token is punctuation."""
-        return bool(re.match(r'^[^\w\s]+$', token))
-    
-    def tokenize(self, text: str) -> List[str]:
-        """Tokenize text with CJK support and contraction handling."""
-        lang = self._detect_lang(text)
         
-        # Non-CJK: word tokenization with contraction handling
-        if lang == "other":
-            # Modified regex to keep contractions together (e.g., j'ai, I'm, don't)
-            # Pattern: word characters, optionally followed by apostrophe and more word characters
-            return re.findall(r"\w+(?:['\']\w+)?|[^\w\s]", text)
-        
-        # Japanese: use MeCab if available
-        if lang == "ja" and self.mecab:
-            node = self.mecab.parseToNode(text)
-            tokens = []
-            while node:
-                if node.surface:
-                    tokens.append(node.surface)
-                node = node.next
-            return tokens
-        
-        # Chinese: use jieba if available
-        if lang == "zh":
-            try:
-                import jieba
-                return [t for t in jieba.cut(text, cut_all=False) if t.strip()]
-            except:
-                pass
-        
-        # Korean: use konlpy if available
-        if lang == "ko":
-            try:
-                from konlpy.tag import Okt
-                return Okt().morphs(text)
-            except:
-                pass
-        
-        # Fallback: character-level tokenization for CJK with contraction handling
-        tokens = []
-        i = 0
-        while i < len(text):
-            c = text[i]
-            # Keep Latin words together (including contractions)
-            if c.isalpha() and not self._is_cjk(c):
-                j = i
-                while i < len(text) and (text[i].isalpha() or text[i] in ["'", "'"]) and not self._is_cjk(text[i]):
-                    i += 1
-                token = text[j:i]
-                # Clean up trailing apostrophes
-                token = token.rstrip("''")
-                if token:
-                    tokens.append(token)
-            # Keep numbers together
-            elif c.isdigit():
-                j = i
-                while i < len(text) and text[i].isdigit():
-                    i += 1
-                tokens.append(text[j:i])
-            # CJK: one character per token
-            elif self._is_cjk(c):
-                tokens.append(c)
-                i += 1
-            # Punctuation (but not apostrophes within words - already handled above)
-            elif c.strip() and re.match(r'[^\w\s]', c) and c not in ["'", "'"]:
-                tokens.append(c)
-                i += 1
-            # Skip whitespace and standalone apostrophes
-            else:
-                i += 1
-        
-        return tokens
+        elif not source_segments and source_metadata:
+            source_segments = [seg["text"] for seg in source_metadata if "text" in seg]
 
-    def _reconstruct_text(self, tokens: List[str]) -> str:
-        """Reconstruct text from tokens, handling spacing and contractions intelligently."""
-        if not tokens:
-            return ""
-        
-        # Detect language
-        text_sample = "".join(tokens[:10])
-        lang = self._detect_lang(text_sample)
-        
-        # Chinese/Japanese: minimal spacing
-        if lang in ["zh", "ja"]:
-            result = ""
-            for i, token in enumerate(tokens):
-                if i > 0:
-                    prev_token = tokens[i - 1]
-                    # Add space before Latin words/numbers
-                    if (token[0].isalnum() and not self._is_cjk(token[0]) and
-                        (prev_token[-1].isalnum() or self._is_cjk(prev_token[-1]))):
-                        result += " "
-                    # Add space after Latin words/numbers before CJK
-                    elif (prev_token[-1].isalnum() and not self._is_cjk(prev_token[-1]) and
-                        self._is_cjk(token[0])):
-                        result += " "
-                result += token
-            return result.strip()
-        
-        # Korean: space-separated
-        if lang == "ko":
-            return " ".join(tokens)
-        
-        # Other languages: space-separated except before punctuation
-        # Contractions are already kept together during tokenization
-        result = ""
-        for i, token in enumerate(tokens):
-            if i > 0:
-                # No space before punctuation (but contractions already include apostrophes)
-                if not self._is_punctuation(token) and tokens[i - 1] != '-':
-                    result += " "
-            result += token
-        
-        return result.strip()
-    
-    def _separate_words_and_punctuation(self, tokens: List[str]) -> Tuple[List[int], List[int]]:
-        """
-        Separate token indices into words and punctuation.
-        
-        Returns:
-            Tuple of (word_indices, punct_indices)
-        """
-        word_indices = []
-        punct_indices = []
-        
-        for i, token in enumerate(tokens):
-            if self._is_punctuation(token):
-                punct_indices.append(i)
-            else:
-                word_indices.append(i)
-        
-        return word_indices, punct_indices
-    
-    def _attach_punctuation_to_words(self, tokens: List[str], word_boundaries: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
-        """
-        Attach punctuation to the previous word segment.
-        
-        Args:
-            tokens: All tokens
-            word_boundaries: List of (start, end) boundaries based on words only
-        
-        Returns:
-            Adjusted boundaries including punctuation
-        """
-        adjusted_boundaries = []
-        
-        for i, (start, end) in enumerate(word_boundaries):
-            adjusted_end = end
-            
-            # Look ahead for punctuation tokens
-            while adjusted_end < len(tokens) and self._is_punctuation(tokens[adjusted_end]):
-                adjusted_end += 1
-            
-            # Make sure we don't overlap with next segment's start
-            if i < len(word_boundaries) - 1:
-                next_start = word_boundaries[i + 1][0]
-                adjusted_end = min(adjusted_end, next_start)
-            
-            adjusted_boundaries.append((start, adjusted_end))
-        
-        return adjusted_boundaries
-    
-    def _find_sentence_endings_in_segments(self, tokens: List[str], boundaries: List[Tuple[int, int]], lang: str) -> List[int]:
-        """
-        Find segments that end with sentence-ending punctuation.
-        
-        Returns:
-            List of segment indices that end with sentence punctuation
-        """
-        endings = self.sentence_endings.get(lang, self.sentence_endings['other'])
-        sentence_ending_segments = []
-        
-        for i, (start, end) in enumerate(boundaries):
-            if end > start:
-                # Check if last token is sentence-ending punctuation
-                last_token = tokens[end - 1]
-                if last_token in endings:
-                    sentence_ending_segments.append(i)
-        
-        return sentence_ending_segments
-    
-    def _realign_on_sentence_boundaries(self, tokens: List[str], boundaries: List[Tuple[int, int]], lang: str, verbose: bool = False, max_look_distance = 3) -> List[Tuple[int, int]]:
-        """
-        Realign segment boundaries to match sentence endings without merging segments.
-        
-        Strategy:
-        - If a segment ends close to a sentence ending (.), move boundary to after the .
-        - If a segment starts close to a sentence ending, move that . to previous segment
-        - This keeps the same number of segments but makes them more meaningful
-        
-        Args:
-            tokens: All target tokens
-            boundaries: List of (start, end) boundaries with punctuation attached
-            source_segments: Original source segments
-            lang: Language code
-            verbose: Debug output
-        
-        Returns:
-            Adjusted boundaries (same count as input)
-        """
+        if not source_segments:
+            print("⚠️  No source text available after metadata extraction.")
+            return None
 
-        # Common determiners in multiple languages
-    
-        endings = self.sentence_endings.get(lang, self.sentence_endings['other'])
-        
-        if verbose:
-            print(f"🔧 Realigning boundaries on sentence endings (max distance: {max_look_distance} tokens)")
-        
-        adjusted_boundaries = []
-        
-        for i, (start, end) in enumerate(boundaries):
-            adjusted_start = start
-            adjusted_end = end
-            
-            # Look at the END of current segment - can we extend to a nearby sentence ending?
-            if i < len(boundaries) - 1:  # Not the last segment
-                found_ending = False
-                # Search forward for sentence ending
-                for look_pos in range(end, min(end + max_look_distance + 1, len(tokens))):
-
-                    if tokens[look_pos] in endings:
-                        while look_pos + 1 < len(tokens) and self._is_punctuation(tokens[look_pos + 1]):
-                            look_pos += 1  # Include trailing punctuation
-                        # Found a sentence ending nearby!
-                        adjusted_end = look_pos + 1  # Include the punctuation
-                        found_ending = True
-                        if i + 1 < len(boundaries):
-                            next_start, next_end = boundaries[i + 1]
-                            boundaries[i + 1] = (adjusted_end, max(next_end, adjusted_end))  # Move next segment's start forward
-
-                        if verbose:
-                            print(f"   Segment {i}: Extended end from {end} to {adjusted_end} (found '{tokens[look_pos]}')")
-                        break
-
-                if not found_ending and tokens[adjusted_end-1] in COMMON_DETERMINERS:
-                    # if next token is a determiner (e.g., "the", "a"), move it to the next segment:
-                    adjusted_end -= 1
-                    if i + 1 < len(boundaries):
-                        next_start, next_end = boundaries[i + 1]
-                        boundaries[i + 1] = (adjusted_end, next_end)  # Move next segment's start back
-                    if verbose:
-                        print(f"   Segment {i}: Moved determiner '{tokens[adjusted_end]}' to next segment")
-
-            
-            # Look at the START of current segment - is there a sentence ending we should move to previous?
-            if i > 0:  # Not the first segment
-                # Search backward for sentence ending
-                for look_pos in range(start-1, start - max_look_distance - 1, -1):
-                    if look_pos > 0 and tokens[look_pos] in endings:
-                        # Found a sentence ending nearby - move it to previous segment
-                        adjusted_start = look_pos + 1  # Start after the sentence ending
-                        
-                        # Update previous segment to include this sentence ending
-                        if adjusted_boundaries:
-                            prev_start, prev_end = adjusted_boundaries[-1]
-                            adjusted_boundaries[-1] = (prev_start, adjusted_start)
-                            
-                            if verbose:
-                                print(f"   Segment {i}: Moved start from {start} to {adjusted_start} (moved '{tokens[look_pos]}' to segment {i-1})")
-                        break
-            
-            adjusted_boundaries.append((adjusted_start, adjusted_end))
-        
-        return adjusted_boundaries
-    
-    def align_segments_proportional(
-        self, 
-        source_segments: List[str], 
-        translated_text: str,
-        realign_on_sentences: bool = True,
-        max_look_distance: int = 3,
-        verbose: bool = False
-    ) -> List[AlignedSegment]:
-        """
-        Proportionally allocate target tokens with smart punctuation handling.
-        
-        Steps:
-        1. Tokenize and separate words from punctuation
-        2. Allocate based on word count only
-        3. Attach punctuation to previous word segments
-        4. Optionally realign on sentence boundaries
-        
-        Args:
-            source_segments: List of source text segments
-            translated_text: Full translated text
-            realign_on_sentences: If True, merge segments to end at sentence boundaries
-            verbose: Print debug information
-        """
         if verbose:
             print(f"\n{'='*70}")
             print(f"🔍 Proportional Alignment: {len(source_segments)} segments")
             print(f"{'='*70}")
         
-        # Tokenize source segments and count words only
+        # Count words per source segment
         source_word_counts = []
-        
         for seg in source_segments:
             tokens = self.tokenize(seg)
             word_count = sum(1 for t in tokens if not self._is_punctuation(t))
@@ -1258,98 +936,74 @@ class ProportionalAligner:
         
         total_source_words = sum(source_word_counts)
         
-        # Tokenize target and separate words from punctuation
+        # Tokenize target
         target_tokens = self.tokenize(translated_text)
-        target_word_indices, target_punct_indices = self._separate_words_and_punctuation(target_tokens)
+        target_word_indices = [i for i, t in enumerate(target_tokens) if not self._is_punctuation(t)]
         total_target_words = len(target_word_indices)
         target_lang = self._detect_lang(translated_text)
         
         if verbose:
-            print(f"📝 Source: {total_source_words} words (excluding punctuation)")
-            print(f"📝 Target: {total_target_words} words, {len(target_punct_indices)} punctuation (lang: {target_lang})")
-            print(f"📊 Source word counts per segment: {source_word_counts}")
+            print(f"📝 Source: {total_source_words} words")
+            print(f"📝 Target: {total_target_words} words (lang: {target_lang})")
         
-        # Calculate proportional allocation based on words only
+        # Proportional allocation
         if total_source_words == 0:
-            words_per_segment = [total_target_words // len(source_segments)] * len(source_segments)
+            words_per_segment = [max(1, total_target_words // len(source_segments))] * len(source_segments)
             remainder = total_target_words % len(source_segments)
             for i in range(remainder):
                 words_per_segment[i] += 1
         else:
-            words_per_segment = []
-            for word_count in source_word_counts:
-                proportion = word_count / total_source_words
-                allocated = max(1, int(round(proportion * total_target_words)))
-                words_per_segment.append(allocated)
+            words_per_segment = [
+                max(1, int(round(count / total_source_words * total_target_words)))
+                for count in source_word_counts
+            ]
         
-        # Adjust to match total target words exactly
+        # Adjust to match total
         diff = total_target_words - sum(words_per_segment)
-        if diff > 0:
-            for i in range(diff):
-                words_per_segment[i % len(words_per_segment)] += 1
-        elif diff < 0:
-            for i in range(abs(diff)):
-                max_idx = max((idx for idx, val in enumerate(words_per_segment) if val > 1), 
-                             key=lambda idx: words_per_segment[idx], 
-                             default=0)
+        for _ in range(abs(diff)):
+            if diff > 0:
+                words_per_segment[_ % len(words_per_segment)] += 1
+            else:
+                max_idx = max((idx for idx, val in enumerate(words_per_segment) if val > 1),
+                             key=lambda idx: words_per_segment[idx], default=0)
                 words_per_segment[max_idx] -= 1
         
-        if verbose:
-            print(f"📊 Allocated words per segment: {words_per_segment} (sum={sum(words_per_segment)})")
-        
-        # Create boundaries based on word indices only
+        # Create word-based boundaries
         word_boundaries = []
         word_pos = 0
-        
         for word_count in words_per_segment:
             start_idx = target_word_indices[word_pos] if word_pos < len(target_word_indices) else len(target_tokens)
             end_pos = min(word_pos + word_count, len(target_word_indices))
             end_idx = target_word_indices[end_pos - 1] + 1 if end_pos > 0 else start_idx
             
+            # Attach trailing punctuation
+            while end_idx < len(target_tokens) and self._is_punctuation(target_tokens[end_idx]):
+                end_idx += 1
+            
             word_boundaries.append((start_idx, end_idx))
             word_pos = end_pos
         
-        if verbose:
-            print(f"📍 Word-based boundaries: {word_boundaries}")
+        # Realign on sentence boundaries
+        final_boundaries = self._realign_on_sentence_boundaries_and_determiners(
+            target_tokens, word_boundaries, target_lang, max_look_distance, verbose
+        )
         
-        # Attach punctuation to previous word segments
-        boundaries_with_punct = self._attach_punctuation_to_words(target_tokens, word_boundaries)
-        
-        if verbose:
-            print(f"📍 After attaching punctuation: {boundaries_with_punct}")
-        
-        # Optional: Realign on sentence boundaries
-        if realign_on_sentences:
-            final_boundaries = self._realign_on_sentence_boundaries(
-                target_tokens, boundaries_with_punct, target_lang, verbose, max_look_distance
-            )
-        else:
-            final_boundaries = boundaries_with_punct
-        
-        if verbose:
-            print(f"📍 Final boundaries: {final_boundaries}")
-        
-        # Create aligned segments
+        # Create segments
         aligned_segments = []
-        
         for i, (start_pos, end_pos) in enumerate(final_boundaries):
-            # Skip empty segments
-            if end_pos - start_pos ==0:
+            if end_pos - start_pos == 0:
                 continue
 
             segment_tokens = target_tokens[start_pos:end_pos]
-            translated_seg = self._reconstruct_text(segment_tokens)
+            translated_seg = self._reconstruct(segment_tokens)
 
             source_indices = [min(i, len(source_segments) - 1)]
             if i + 1 < len(final_boundaries) and final_boundaries[i+1][1] - final_boundaries[i+1][0] == 0:
                 source_indices.append(min(i + 1, len(source_segments) - 1))
-
-            # this will only be triggered in the pass of second target segment if the first target segment was empty
             if i == 1 and final_boundaries[0][1] - final_boundaries[0][0] == 0:
                 source_indices.insert(0, 0)
                 
             original_text = " ".join(source_segments[j] for j in source_indices)
-            
             
             aligned_seg = AlignedSegment(
                 original_text=original_text,
@@ -1362,16 +1016,16 @@ class ProportionalAligner:
             )
             
             aligned_segments.append(aligned_seg)
-            
-            if verbose:
-                token_count = end_pos - start_pos
-                first_token = segment_tokens[0] if segment_tokens else ""
-                last_token = segment_tokens[-1] if segment_tokens else ""
-                print(f"[{i}] {original_text[:40]:40s} → {translated_seg[:50]:50s}")
-                print(f"     ({token_count} tokens: [{start_pos}:{end_pos}], starts:'{first_token}', ends:'{last_token}')")
+        
+        # Assign timestamps
+        if source_metadata:
+            self._assign_timings(aligned_segments, source_metadata)
         
         if verbose:
             print(f"✅ Done: {len(aligned_segments)} segments")
+            for i, seg in enumerate(aligned_segments):
+                ts = f" [{seg.start:.2f}s - {seg.end:.2f}s]" if seg.start is not None else ""
+                print(f"[{i}] {seg.original_text[:30]:30s} → {seg.translated_text[:40]:40s}{ts}")
             print(f"{'='*70}\n")
         
         return aligned_segments

@@ -1,4 +1,5 @@
 import json, sys, os
+from typing import Tuple, List, Optional
 import uuid
 import httpx
 from pathlib import Path
@@ -10,7 +11,7 @@ from media_processing.audio_processing import concatenate_audio, get_audio_durat
 from media_processing.final_pass import final
 import shutil
 import subprocess
-from common_schemas.utils import TranslationSegmentAligner, ProportionalAligner
+from common_schemas.utils import SophisticatedAligner, ProportionalAligner
 
 app = FastAPI(title="orchestrator")
 
@@ -37,6 +38,7 @@ async def dub(
     mobile_optimized: bool = Query(True, description="Optimize for mobile viewing"),
     allow_short_translations: bool = Query(True, description="Allow short translations for alignment"),
     segments_aligner_model: str = Query("default", description="Model for translated segment alignment with the source segments"),
+    allow_merging: bool = Query(False, description="Allow merging segments during alignment"),
     subtitle_style: str = Query("default", description="Subtitle style preset: default, minimal, bold, netflix"),
 ):
     """
@@ -238,36 +240,40 @@ async def dub(
         # ========== STEP 4.5: Align Translation to Original Segments ==========
         if (not allow_short_translations) and (len(aligned_asr_result.segments) > 1):  # Only needed if multiple segments
             
-            # Extract original segment texts
-            source_texts = [seg.text for seg in aligned_asr_result.segments]
-            
             # Get full translated text
             full_translation = " ".join([seg.text for seg in tr_result.segments])
             
             # Align translation back to original segments
-            # Quick usage
-
-            # Replace lines 209-219 with:
             if segments_aligner_model in ["proportional", "default"]:
                 aligner = ProportionalAligner()
-                aligned_translations = aligner.align_segments_proportional(
-                    source_segments=source_texts, 
-                    translated_text=full_translation, 
-                    realign_on_sentences=True,
-                    verbose=True
+                aligned_translations =aligner.align_segments(
+                    source_segments=None, 
+                    translated_text=full_translation,
+                    verbose=True,
+                    max_look_distance=3,
+                    source_metadata=aligned_asr_result.model_dump()["segments"]
+                    
                 )
-            elif segments_aligner_model == "sophisticate":
-                aligner = TranslationSegmentAligner(matching_method="i", allow_merging=True)
-                aligned_translations = aligner.align_segments(source_texts, full_translation, verbose=True)
+            elif segments_aligner_model == "sophisticated":
+                aligner = SophisticatedAligner(matching_method="i", allow_merging=allow_merging)
+                aligned_translations = aligner.align_segments(
+                    source_segments=None, 
+                    translated_text=full_translation,
+                    verbose=True,
+                    max_look_distance=3,
+                    source_metadata=aligned_asr_result.model_dump()["segments"]
+                )
 
             else:
                 # Fallback to proportional aligner
                 aligner = ProportionalAligner()
-                aligned_translations = aligner.align_segments_proportional(
-                    source_segments=source_texts, 
-                    translated_text=full_translation, 
-                    realign_on_sentences=True,
-                    verbose=True
+                aligned_translations = aligner.align_segments(
+                    source_segments=None, 
+                    translated_text=full_translation,
+                    verbose=True,
+                    max_look_distance=3,
+                    source_metadata=aligned_asr_result.model_dump()["segments"]
+                    
                 )
             # Each segment ready for TTS synthesis
             Tresponse_segments = ASRResponse()
@@ -281,8 +287,8 @@ async def dub(
 
                 print(f"Segment {i}: '{seg.original_text}' → '{seg.translated_text}'")
                 T_segment = Segment(
-                    start=min([aligned_asr_result.segments[j].start for j in seg.source_segment_indices]),
-                    end=max([aligned_asr_result.segments[j].end for j in seg.source_segment_indices]),
+                    start=seg.start,
+                    end=seg.end,
                     text=seg.translated_text,
                     lang=target_lang
                 )
