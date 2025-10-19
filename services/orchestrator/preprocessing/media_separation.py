@@ -30,11 +30,3 @@ def separation(input_file: str, output_dir: str, model_filename: str, output_for
     separator.load_model(model_filename=model_filename)
     output_files = separator.separate(input_file, custom_output_names=custom_output_names)
     return output_files[0] if output_files else ""
-
-# separation(
-#     input_file="/home/akpale/my_companie/ai_agent/assets/video_to_dub_essaie2_audio.wav",
-#     output_dir=str(OUT),
-#     model_filename="UVR-MDX-NET-Inst_HQ_3.onnx",
-#     output_format="WAV",
-#     custom_output_names={"vocals": "vocals", "instrumental": "background"}
-# )

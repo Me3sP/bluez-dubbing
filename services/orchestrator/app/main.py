@@ -144,18 +144,18 @@ async def dub(
             raise HTTPException(400, f"Unsupported file format: {video_url}")
         
         # Separate vocals and background
-        separation(
-            input_file=str(raw_audio_path),
-            output_dir=str(preprocessing_out),
-            model_filename=sep_model,
-            output_format="WAV",
-            custom_output_names={"vocals": "vocals", "instrumental": "background"}
-        )
+        # separation(
+        #     input_file=str(raw_audio_path),
+        #     output_dir=str(preprocessing_out),
+        #     model_filename=sep_model,
+        #     output_format="WAV",
+        #     custom_output_names={"vocals": "vocals", "instrumental": "background"}
+        # )
 
         # ========== STEP 2: ASR - Transcribe vocals ==========
         async with httpx.AsyncClient(timeout=300) as client:
             asr_req = ASRRequest(
-                audio_url=str(vocals_path),
+                audio_url=str(raw_audio_path),
                 language_hint=source_lang
             )
 

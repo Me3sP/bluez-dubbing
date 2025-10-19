@@ -14,6 +14,10 @@ WORKERS = {
             venv_python=BASE/"models/facebook_m2m100Model/.venv/bin/python",
             runner=BASE/"models/facebook_m2m100Model/runner.py"
         ),
+        "deep_translator": Worker(
+            venv_python=BASE/"models/deepTranslationModel/.venv/bin/python",
+            runner=BASE/"models/deepTranslationModel/runner.py"
+        ),
     }
 
 def get_worker(model_key: str) -> tuple[Path, Path]:
