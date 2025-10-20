@@ -14,6 +14,10 @@ WORKERS = {
             venv_python=BASE/"models/chatterboxModel/.venv/bin/python",
             runner=BASE/"models/chatterboxModel/runner.py"
         ),
+        "edge_tts": Worker(
+            venv_python=BASE/"models/edgeTTsModel/.venv/bin/python",
+            runner=BASE/"models/edgeTTsModel/runner.py"
+        ),
     }
 
 def get_worker(model_key: str) -> tuple[Path, Path]:

@@ -1,11 +1,11 @@
 [project]
-name = "deeptranslationmodel"
+name = "edgettsmodel"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "deep-translator>=1.11.4",
+    "edge-tts>=7.2.3",
     "common-schemas"
 ]
 
