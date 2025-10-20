@@ -1,4 +1,4 @@
-from .models import Word, Segment
+from .models import Word, Segment, ASRResponse
 from typing import List, Tuple, Optional, Set
 from simalign import SentenceAligner
 import re
@@ -378,6 +378,7 @@ class Aligner(ABC):
             print(f"🔧 Realigning with sentence endings and determiners (look={max_look_distance})")
 
         for i, (start, end) in enumerate(b):
+            print("startiiiiiiiiiiiiii", start, end)
             if i < len(b) - 1 and end < tok_count:
                 q = end
                 while q < tok_count and self._is_punctuation(tokens[q]):
@@ -429,43 +430,56 @@ class Aligner(ABC):
                 _, next_end = b[i + 1]
                 b[i + 1] = (end, max(next_end, end))
 
+            print("finiiiiiiiiiiiiiiii")
+
         return b
 
     def _assign_timings(
-        self,
-        aligned: List[AlignedSegment],
-        source_metadata: List[dict]
-    ) -> None:
+            self,
+            aligned: List[AlignedSegment],
+            target_tokens: List[str],
+            source_metadata: List[dict]
+        ) -> None:
+
         src_meta = {
             idx: (seg["start"], seg["end"])
             for idx, seg in enumerate(source_metadata)
             if "start" in seg and "end" in seg
         }
 
-        buckets: dict[Tuple[int, ...], List[int]] = {}
-        for idx, seg in enumerate(aligned):
-            key = tuple(seg.source_segment_indices)
-            buckets.setdefault(key, []).append(idx)
+        print("="*20 + "debugging info" + "="*20)
+        print("src_meta : ", src_meta)
+        print("="*40)
 
-        for key, positions in buckets.items():
-            valid = [i for i in key if i in src_meta]
-            if not valid:
-                continue
+        total_valid_duration=0
+        buckets = []
+        for seg in aligned:
+            start = min( [src_meta[i][0] for i in seg.source_segment_indices if i in src_meta] )
+            end = max( [src_meta[i][1] for i in seg.source_segment_indices if i in src_meta] + [start])
+            buckets.append( (start, end) )
+            current_duration = end - start
+            total_valid_duration += max(current_duration, 0)
 
-            window_start = min(src_meta[i][0] for i in valid)
-            window_end = max(src_meta[i][1] for i in valid)
-            window_duration = max(0.0, window_end - window_start)
+        print("="*20 + "debugging info" + "="*20)
+        print("buckets : ", buckets)
+        print("="*40)
 
-            positions.sort(key=lambda p: aligned[p].target_indices[0] if aligned[p].target_indices else -1)
-            weights = [max(1, len(aligned[p].target_indices)) for p in positions]
-            total = float(sum(weights)) or 1.0
+        weights = [max(1, len([1 for tok in seg.target_indices if not self._is_punctuation(target_tokens[tok])])) for seg in aligned]
+        total_weight = float(sum(weights)) or 1.0
+        current_start = src_meta.get(0)[0]
 
-            cursor = window_start
-            for pos, weight in zip(positions, weights):
-                seg_duration = window_duration * weight / total
-                aligned[pos].start = cursor
-                aligned[pos].end = cursor + seg_duration
-                cursor += seg_duration
+        print("="*20 + "debugging info" + "="*20)
+        print("current_start : ", current_start)
+        print("="*40)
+
+        for idx, (seg, weight) in enumerate(zip(aligned, weights)):
+            seg_duration = total_valid_duration * weight / total_weight
+            seg.start = current_start
+            seg.end = current_start + seg_duration
+            if idx + 1 in src_meta:
+                current_start += seg_duration + src_meta.get(idx + 1)[0] - src_meta.get(idx)[1]
+            else:
+                seg.end = source_metadata[-1].get("end")
 
     @abstractmethod
     def align_segments(self, source_segments: List[str] | None, translated_text: str,
@@ -812,6 +826,8 @@ class SophisticatedAligner(Aligner):
         
         elif not source_segments and source_metadata:
             source_segments = [seg["text"] for seg in source_metadata if "text" in seg]
+            print ("👍  Source segments extracted from metadata.")
+            print (source_segments)
 
         if not source_segments:
             print("⚠️  No source text available after metadata extraction.")
@@ -893,7 +909,7 @@ class SophisticatedAligner(Aligner):
             max_look_distance=max_look_distance
         )
         if source_metadata:
-            self._assign_timings(segments, source_metadata)
+            self._assign_timings(segments, tgt_tokens, source_metadata)
         if verbose:
             print(f"✅ Done: {len(segments)} segments\n{'='*70}\n")
         return segments
@@ -1019,7 +1035,7 @@ class ProportionalAligner(Aligner):
         
         # Assign timestamps
         if source_metadata:
-            self._assign_timings(aligned_segments, source_metadata)
+            self._assign_timings(aligned_segments, target_tokens, source_metadata)
         
         if verbose:
             print(f"✅ Done: {len(aligned_segments)} segments")
@@ -1029,3 +1045,128 @@ class ProportionalAligner(Aligner):
             print(f"{'='*70}\n")
         
         return aligned_segments
+    
+    
+def alignerWrapper(input_dict, aligner_model, target_lang, allow_merging=False, max_look_distance=3, verbose=True):
+
+    aligned_translations = []
+    
+    for i in input_dict.keys():
+        
+        # Align translation back to original segments
+        if aligner_model in ["proportional", "default"]:
+            aligner = ProportionalAligner()
+            aligned_translation = aligner.align_segments(
+                source_segments=None,
+                translated_text=input_dict[i]["full_text"],
+                verbose=verbose,
+                max_look_distance=max_look_distance,
+                source_metadata=input_dict[i]["segments"]
+                
+            )
+        elif aligner_model == "sophisticated":
+            aligner = SophisticatedAligner(matching_method="i", allow_merging=allow_merging)
+            aligned_translation = aligner.align_segments(
+                source_segments=None,
+                translated_text=input_dict[i]["full_text"],
+                verbose=verbose,
+                max_look_distance=max_look_distance,
+                source_metadata=input_dict[i]["segments"]
+            )
+
+        else:
+            # Fallback to proportional aligner
+            aligner = ProportionalAligner()
+            aligned_translation = aligner.align_segments(
+                source_segments=None, 
+                translated_text=input_dict[i]["full_text"],
+                verbose=verbose,
+                max_look_distance=max_look_distance,
+                source_metadata=input_dict[i]["segments"]
+            )
+
+        aligned_translations.extend( aligned_translation )
+
+    # Each segment ready for TTS synthesis
+    Tresponse_segments = ASRResponse()
+
+    # Update translation segments with aligned text
+    for i, seg in enumerate(aligned_translations):
+
+        print("="*40)
+        print("="*20 + " Debug: Sophisticated Aligner Output " + "*"*20)
+        print("="*40)
+
+        print(f"Segment {i}: '{seg.original_text}' → '{seg.translated_text}'")
+        T_segment = Segment(
+            start=seg.start,
+            end=seg.end,
+            text=seg.translated_text,
+            lang=target_lang
+        )
+        Tresponse_segments.segments.append(T_segment)
+
+    Tresponse_segments.language = target_lang
+    tr_result = Tresponse_segments  # Replace with aligned segments
+
+    return tr_result
+
+    
+import re
+
+def map_by_text_overlap(coarse, fine):
+    def normalize(text: str) -> str:
+        return re.sub(r"\W+", " ", (text or "").lower()).strip()
+
+    # Precompute coarse caches
+    coarse_cache = []
+    for idx, seg in enumerate(coarse):
+        raw = normalize(seg.get("text", ""))
+        words = raw.split()
+        coarse_cache.append({
+            "idx": idx,
+            "words": set(words),
+            "word_count": max(1, len(words)),
+            "chars": len(raw.replace(" ", "")),
+        })
+
+    mappings = []
+    for fi, fseg in enumerate(fine):
+        raw_f = normalize(fseg.get("text", ""))
+        words_f = raw_f.split()
+        if not words_f:
+            mappings.append({"fine_idx": fi, "parent_coarse_idx": None, "similarity": 0.0})
+            continue
+
+        word_set_f = set(words_f)
+        word_count_f = max(1, len(words_f))
+        char_count_f = len(raw_f.replace(" ", ""))
+
+        best_ci, best_score = None, 0.0
+        for cc in coarse_cache:
+            overlap_words = len(word_set_f & cc["words"])
+            if overlap_words == 0:
+                continue
+
+            containment = overlap_words / word_count_f
+            char_overlap = min(char_count_f, cc["chars"]) / max(char_count_f, cc["chars"] or 1)
+            score = 0.7 * containment + 0.3 * char_overlap
+
+            if score > best_score:
+                best_ci, best_score = cc["idx"], score
+
+        mappings.append({
+            "fine_idx": fi,
+            "parent_coarse_idx": best_ci,
+            "similarity": round(best_score, 3),
+        })
+
+        grouped = {
+            ci: {
+                "segments": [fine[m["fine_idx"]] for m in mappings if m["parent_coarse_idx"] == ci],
+                "full_text": coarse[ci].get("text", "")
+            }
+            for ci in range(len(coarse))
+        }
+
+    return grouped

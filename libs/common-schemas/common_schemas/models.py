@@ -36,7 +36,7 @@ class ASRResultWrapper(BaseModel):
 class TranslateRequest(BaseModel):
     segments: List[Segment] | None = Field(default_factory=list)
     source_lang: str | None = None
-    target_lang: str 
+    target_lang: str
 
 
 # TTS

@@ -11,7 +11,7 @@ from media_processing.audio_processing import concatenate_audio, get_audio_durat
 from media_processing.final_pass import final
 import shutil
 import subprocess
-from common_schemas.utils import SophisticatedAligner, ProportionalAligner
+from common_schemas.utils import map_by_text_overlap, alignerWrapper
 
 app = FastAPI(title="orchestrator")
 
@@ -239,65 +239,15 @@ async def dub(
 
         # ========== STEP 4.5: Align Translation to Original Segments ==========
         if (not allow_short_translations) and (len(aligned_asr_result.segments) > 1):  # Only needed if multiple segments
-            
-            # Get full translated text
-            full_translation = " ".join([seg.text for seg in tr_result.segments])
-            
-            # Align translation back to original segments
-            if segments_aligner_model in ["proportional", "default"]:
-                aligner = ProportionalAligner()
-                aligned_translations =aligner.align_segments(
-                    source_segments=None, 
-                    translated_text=full_translation,
-                    verbose=True,
-                    max_look_distance=3,
-                    source_metadata=aligned_asr_result.model_dump()["segments"]
-                    
-                )
-            elif segments_aligner_model == "sophisticated":
-                aligner = SophisticatedAligner(matching_method="i", allow_merging=allow_merging)
-                aligned_translations = aligner.align_segments(
-                    source_segments=None, 
-                    translated_text=full_translation,
-                    verbose=True,
-                    max_look_distance=3,
-                    source_metadata=aligned_asr_result.model_dump()["segments"]
-                )
 
-            else:
-                # Fallback to proportional aligner
-                aligner = ProportionalAligner()
-                aligned_translations = aligner.align_segments(
-                    source_segments=None, 
-                    translated_text=full_translation,
-                    verbose=True,
-                    max_look_distance=3,
-                    source_metadata=aligned_asr_result.model_dump()["segments"]
-                    
-                )
-            # Each segment ready for TTS synthesis
-            Tresponse_segments = ASRResponse()
+            mappings = map_by_text_overlap( raw_asr_result.model_dump()["segments"], aligned_asr_result.model_dump()["segments"])
 
-            # Update translation segments with aligned text
-            for i, seg in enumerate(aligned_translations):
+            for idx, tr in zip(mappings.keys(), tr_result.segments):
+                mappings[idx]["full_text"] = tr.text
 
-                print("="*40)
-                print("="*20 + " Debug: Sophisticated Aligner Output " + "*"*20)
-                print("="*40)
+            print(f"Alignment mappings: {mappings[0]['segments']}")
 
-                print(f"Segment {i}: '{seg.original_text}' → '{seg.translated_text}'")
-                T_segment = Segment(
-                    start=seg.start,
-                    end=seg.end,
-                    text=seg.translated_text,
-                    lang=target_lang
-                )
-                Tresponse_segments.segments.append(T_segment)
-
-            Tresponse_segments.language = target_lang
-            tr_result = Tresponse_segments  # Replace with aligned segments
-
-            print(f"✅ Aligned {len(aligned_translations)} translated segments")
+            tr_result = alignerWrapper(mappings, segments_aligner_model, target_lang, allow_merging=allow_merging, max_look_distance=3, verbose=True)
 
             # Save aligned translation output
             tr_aligned_origin = workspace / "translation" / "translation_aligned_W_origin_result.json"
