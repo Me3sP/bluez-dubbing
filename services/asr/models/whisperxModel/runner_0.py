@@ -2,6 +2,7 @@ import sys, json, logging, warnings, contextlib
 from common_schemas.models import ASRRequest, ASRResponse, Segment, Word
 from common_schemas.utils import convert_whisperx_result_to_Segment, create_word_segments
 import whisperx
+from whisperx.diarize import DiarizationPipeline
 import os
 from dotenv import load_dotenv
 # from pathlib import Path
@@ -15,6 +16,9 @@ if __name__ == "__main__":
         req = ASRRequest(**json.loads(sys.stdin.read()))
 
         with contextlib.redirect_stdout(sys.stderr):
+
+            load_dotenv()
+            YOUR_HF_TOKEN = os.getenv("HF_TOKEN")
 
             device = "cuda" # if torch.cuda.is_available() else "cpu"
             batch_size = 16 # reduce if low on GPU mem
@@ -38,9 +42,22 @@ if __name__ == "__main__":
             torch.cuda.empty_cache()
             del model
 
-            # Align whisper output
+            # 2. Assign speaker labels
+            diarize_model = DiarizationPipeline(use_auth_token=YOUR_HF_TOKEN, device=device)
+
+            # add min/max number of speakers if known
+            diarize_segments = diarize_model(audio)
+            # diarize_model(audio, min_speakers=min_speakers, max_speakers=max_speakers)
+
+            if not req.allow_short:
+                result_0 = whisperx.assign_word_speakers(diarize_segments, result_0)
+
+            # 3. Align whisper output
             model_a, metadata = whisperx.load_align_model(language_code=language, device=device)
             result = whisperx.align(result_0["segments"], model_a, metadata, audio, device, return_char_alignments=False)
+
+            if req.allow_short:
+                result = whisperx.assign_word_speakers(diarize_segments, result)
 
             # delete model if low on GPU resources
             del audio

@@ -5,6 +5,7 @@ from typing import List, Optional, Dict, Any
 class ASRRequest(BaseModel):
     audio_url: str
     language_hint: str | None = None
+    allow_short: bool = False # diarize after alignment when True
 
 class Word(BaseModel):
     start: float
@@ -20,6 +21,7 @@ class Segment(BaseModel):
     words: List[Word] | None = None
     speaker_id: str | None = None
     lang: str | None = None
+    audio_url: str | None = None  # Optional field for audio link to that segment
 
 # will serve for both ASR and Translation responses
 class ASRResponse(BaseModel):

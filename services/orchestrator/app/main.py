@@ -11,7 +11,7 @@ from media_processing.audio_processing import concatenate_audio, get_audio_durat
 from media_processing.final_pass import final
 import shutil
 import subprocess
-from common_schemas.utils import map_by_text_overlap, alignerWrapper, LANGUAGE_MATCHING
+from common_schemas.utils import map_by_text_overlap, alignerWrapper, LANGUAGE_MATCHING, attach_segment_audio_clips
 
 app = FastAPI(title="orchestrator")
 
@@ -163,7 +163,8 @@ async def dub(
         async with httpx.AsyncClient(timeout=1200) as client:
             asr_req = ASRRequest(
                 audio_url=str(raw_audio_path),
-                language_hint=LANGUAGE_MATCHING[source_lang]["asr"] if source_lang else None
+                language_hint=LANGUAGE_MATCHING[source_lang]["asr"] if source_lang else None,
+                allow_short=allow_short_translations
             )
 
             # Call ASR service for the transcription step without alignement
@@ -272,6 +273,16 @@ async def dub(
         
 
         # ========== STEP 5: TTS - Synthesize dubbed audio ==========
+        tr_result.audio_url = str(raw_audio_path)  # Provide original audio for context
+        prompt_audio_dir = workspace / "prompts"
+        updated = attach_segment_audio_clips(
+            asr_dump=tr_result.model_dump(),
+            output_dir=prompt_audio_dir,
+            min_duration=9.0,
+            max_duration=40.0
+        )
+        tr_result = ASRResponse(**updated)
+
         async with httpx.AsyncClient(timeout=1200) as client:
             # Map translated segments to TTS input
             tts_segments = [
@@ -281,7 +292,7 @@ async def dub(
                     text=tr_seg.text,
                     speaker_id=tr_seg.speaker_id,
                     lang=tr_result.language or target_lang,
-                    audio_prompt_url=str(raw_audio_path) if tr_seg.speaker_id else None
+                    audio_prompt_url=tr_seg.audio_url if tr_seg.speaker_id else None
                 )
                 for tr_seg in tr_result.segments
             ]

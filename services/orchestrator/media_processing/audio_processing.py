@@ -397,196 +397,235 @@ def concatenate_audio(segments, output_file, target_duration: Optional[float] = 
     
     # ========== SINGLE SEGMENT CASE ==========
     if len(segments) == 1:
-        if target_duration is None:
-            shutil.copy2(audio_files[0], output_file)
-            print(f"Single file copied to: {output_file}")
-            return output_file
+        if target_duration:
+            actual_duration = get_audio_duration(Path(audio_files[0]))
+            if actual_duration > target_duration:
+                # Compress to fit target duration
+                rubberband_to_duration(audio_files[0], target_duration * 1000, output_file)
+            else:
+                # Pad with silence to reach target duration
+                expected_duration = segments[0]["end"] - segments[0]["start"]
+                
+                # Calculate new timing to center the audio
+                adjust_amount = expected_duration - actual_duration
+                new_start = segments[0]["start"] + (adjust_amount / 2 if adjust_amount > 0 else 0)
+                new_end = segments[0]["end"] - (adjust_amount / 2 if adjust_amount > 0 else 0)
+                
+                # Create silence gaps
+                silence_before = new_start  # From 0 to new_start
+                silence_after = target_duration - new_end  # From new_end to target_duration
+                
+                # Use weighted silence concatenation
+                _concat_with_weighted_silence([audio_files[0]], output_file, [silence_before, silence_after])
         else:
-            print(f"Adjusting single file to target duration: {target_duration:.2f}s")
-            return rubberband_to_duration(audio_files[0], target_duration * 1000, output_file)
+            # No target duration, just copy the file
+            shutil.copy(audio_files[0], output_file)
+        
+        return output_file
     
     # ========== NO TARGET DURATION ==========
     if target_duration is None:
         return _simple_concat(audio_files, output_file)
     
-    # ========== ANALYZE SEGMENTS (single pass) ==========
+    # ========== CENTERING LOGIC WITH SILENCE PADDING ==========
     print("\n" + "="*60)
-    print("📊 ANALYZING SEGMENTS")
+    print("📊 CENTERING SEGMENTS WITH SILENCE PADDING")
     print("="*60)
     
     segment_info = []
-    total_actual_duration = 0.0
-    total_expected_duration = 0.0
     
+    # Calculate centered positions for each segment and track overrun amounts
     for i, seg in enumerate(segments):
         expected_duration = seg["end"] - seg["start"]
         actual_duration = get_audio_duration(Path(seg["audio_url"]))
-        is_longer = actual_duration > expected_duration
+        
+        # Calculate overrun (how much longer than expected, 0 if shorter)
+        overrun = max(0, actual_duration - expected_duration)
+        
+        # Center the actual audio within the expected time slot
+        expected_center = (seg["start"] + seg["end"]) / 2
+        centered_start = expected_center - (actual_duration / 2)
+        centered_end = centered_start + actual_duration
         
         segment_info.append({
             'index': i,
             'audio_url': seg["audio_url"],
-            'start': seg["start"],
-            'end': seg["end"],
+            'original_start': seg["start"],
+            'original_end': seg["end"],
             'expected_duration': expected_duration,
             'actual_duration': actual_duration,
-            'is_longer': is_longer,
+            'centered_start': centered_start,
+            'centered_end': centered_end,
+            'overrun': overrun,  # Track how much longer than expected
+            'remaining_overrun': overrun,  # Track remaining overrun after adjustments
         })
         
-        total_actual_duration += actual_duration
-        total_expected_duration += expected_duration
-        
-        status = "🔴 LONGER" if is_longer else "🟢 OK"
-        print(f"Segment {i}: {status} | Expected: {expected_duration:.2f}s | Actual: {actual_duration:.2f}s")
+        print(f"Segment {i}: Expected [{seg['start']:.2f}-{seg['end']:.2f}] → Centered [{centered_start:.2f}-{centered_end:.2f}] (overrun: {overrun:.3f}s)")
     
-    print(f"\nTotal actual: {total_actual_duration:.2f}s | Expected: {total_expected_duration:.2f}s | Target: {target_duration:.2f}s")
+    # ========== HANDLE FIRST SEGMENT (shift to start at 0 if needed) ==========
+    if segment_info[0]['centered_start'] < 0:
+        shift = -segment_info[0]['centered_start']
+        segment_info[0]['centered_start'] = 0
+        segment_info[0]['centered_end'] += shift
+        print(f"🔧 First segment shifted by +{shift:.3f}s to start at 0")
     
-    # ========== CASE 1: Total actual > target ==========
-    # Need to compress everything to fit
-    if total_actual_duration > target_duration:
-        print(f"\n⚠️  Audio ({total_actual_duration:.2f}s) exceeds target ({target_duration:.2f}s)")
-        print(f"   Compressing by {(total_actual_duration/target_duration):.3f}x")
-        
-        import tempfile
-        temp_dir = Path(tempfile.mkdtemp())
-        try:
-            temp_concat = temp_dir / "temp_concat.wav"
-            _simple_concat(audio_files, str(temp_concat))
-            result = rubberband_to_duration(str(temp_concat), target_duration * 1000, output_file)
-            print("✅ COMPRESSION COMPLETE\n" + "="*60)
-            return result
-        finally:
-            shutil.rmtree(temp_dir, ignore_errors=True)
+    # ========== HANDLE LAST SEGMENT (shift to end at target_duration if needed) ==========
+    if segment_info[-1]['centered_end'] > target_duration:
+        shift = segment_info[-1]['centered_end'] - target_duration
+        segment_info[-1]['centered_end'] = target_duration
+        segment_info[-1]['centered_start'] -= shift
+        print(f"🔧 Last segment shifted by -{shift:.3f}s to end at target duration")
     
-    # ========== CASE 2: Total actual >= total expected ==========
-    # No stretching needed, just add silence to reach target
-    if total_actual_duration >= total_expected_duration:
-        print(f"\n✅ Sum of all segments durations above expected sum of durations but below target")
-        print(f"   Adding silence to reach target: {target_duration - total_actual_duration:.2f}s")
+    # ========== RESOLVE OVERLAPS WITH WEIGHTED ADJUSTMENT ==========
+    print("\n🔍 Checking for overlaps...")
+    for i in range(len(segment_info) - 1):
+        current = segment_info[i]
+        next_seg = segment_info[i + 1]
         
-        processed_files = audio_files
-        total_processed_duration = total_actual_duration
-    
-    # ========== CASE 3: Total actual < total expected ==========
-    # Some segments need stretching
-    else:
-        print(f"\n🔧 Sum of all segments durations below expected sum of durations - applying intelligent stretching")
-        
-        # Separate longer vs normal segments
-        longer_segments = [s for s in segment_info if s['is_longer']]
-        normal_segments = [s for s in segment_info if not s['is_longer']]
-        
-        # Calculate adjustment ratio for normal segments
-        if longer_segments:
-            duration_used_by_longer = sum(s['actual_duration'] for s in longer_segments)
-            expected_duration_of_longer = sum(s['expected_duration'] for s in longer_segments)
+        if current['centered_end'] > next_seg['centered_start']:
+            overlap = current['centered_end'] - next_seg['centered_start']
+            print(f"⚠️  Overlap detected between segments {i} and {i+1}: {overlap:.3f}s")
             
-            remaining_target = target_duration - duration_used_by_longer
-            hypothetical_remaining = target_duration - expected_duration_of_longer
+            # Calculate weights based on remaining overrun amounts
+            current_weight = current['remaining_overrun']
+            next_weight = next_seg['remaining_overrun']
+            total_weight = current_weight + next_weight
             
-            adjustment_ratio = remaining_target / hypothetical_remaining if hypothetical_remaining > 0 else 1.0
+            print(f"   Current segment overrun: {current_weight:.3f}s, Next segment overrun: {next_weight:.3f}s")
             
-            print(f"   Longer segments: {len(longer_segments)} (using {duration_used_by_longer:.2f}s)")
-            print(f"   Normal segments: {len(normal_segments)} (ratio: {adjustment_ratio:.3f}x)")
-        else:
-            # All segments below expected - scale proportionally
-            adjustment_ratio = 0.0
-            print(f"   All segments below expected - scaling by {adjustment_ratio:.3f}x")
-        
-        # Process segments
-        import tempfile
-        temp_dir = Path(tempfile.mkdtemp())
-        processed_files = []
-        total_processed_duration = 0.0
-        
-        try:
-            for seg_info in segment_info:
-                if seg_info['is_longer']:
-                    # Keep as-is
-                    processed_files.append(seg_info['audio_url'])
-                    seg_info['final_duration'] = seg_info['actual_duration']
-                    print(f"  ✓ Segment {seg_info['index']}: Keep original ({seg_info['actual_duration']:.2f}s)")
-                else:
-                    # Calculate new expected duration
-                    new_expected = seg_info['expected_duration'] * adjustment_ratio
-                    
-                    if seg_info['actual_duration'] < new_expected:
-                        # Needs stretching
-                        stretched_file = temp_dir / f"stretched_seg_{seg_info['index']}.wav"
-                        rubberband_to_duration(
-                            seg_info['audio_url'],
-                            new_expected * 1000,
-                            str(stretched_file)
-                        )
-                        processed_files.append(str(stretched_file))
-                        seg_info['final_duration'] = new_expected
-                        print(f"  🔄 Segment {seg_info['index']}: Stretch {seg_info['actual_duration']:.2f}s → {new_expected:.2f}s")
-                    else:
-                        # Actual is already sufficient
-                        processed_files.append(seg_info['audio_url'])
-                        seg_info['final_duration'] = seg_info['actual_duration']
-                        print(f"  ✓ Segment {seg_info['index']}: Keep original ({seg_info['actual_duration']:.2f}s)")
-                
-                total_processed_duration += seg_info['final_duration']
-        
-        except Exception as e:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            raise
-    
-    # ========== ADD WEIGHTED SILENCE ==========
-    silence_needed = target_duration - total_processed_duration
-    
-    if silence_needed > 0:  # Only if meaningful silence is needed
-        print(f"\n🔇 Adding {silence_needed:.2f}s weighted silence")
-        
-        # Calculate original gaps
-        original_gaps = [segments[0]["start"]]  # Before first
-        for i in range(len(segments) - 1):
-            original_gaps.append(segments[i + 1]["start"] - segments[i]["end"])
-        original_gaps.append(target_duration - segments[-1]["end"])  # After last
-
-        total_original_gaps = sum(original_gaps)
-        
-        # Weight silence proportionally
-        if total_original_gaps > 0:
-            silence_gaps = [(gap / total_original_gaps) * silence_needed for gap in original_gaps]
-        else:
-            silence_gaps = [silence_needed / len(original_gaps)] * len(original_gaps)
-        
-        print(f"   Original gaps: {[f'{g:.2f}' for g in original_gaps]}")
-        print(f"   Silence gaps: {[f'{s:.2f}' for s in silence_gaps]}")
-        
-        result = _concat_with_weighted_silence(processed_files, output_file, silence_gaps)
-        # Check result audio duration and adjust only if longer than target
-        actual_duration = get_audio_duration(Path(result))
-        if actual_duration > target_duration:
-            print(f"   Result duration ({actual_duration:.3f}s) exceeds target ({target_duration:.3f}s) by {actual_duration - target_duration:.3f}s")
-            result = rubberband_to_duration(result, target_duration * 1000, output_file)
-    
-    else:
-        # Processed duration exceeds target: compress final concat to exact target
-        over_by = -silence_needed
-        print(f"\n⚠️  Processed duration exceeds target by {over_by:.3f}s → compressing to target")
-        import tempfile
-        temp_dir2 = Path(tempfile.mkdtemp())
-        try:
-            temp_concat = temp_dir2 / "temp_concat.wav"
-            _simple_concat(processed_files, str(temp_concat))
-            actual_duration = get_audio_duration(temp_concat)
-            if actual_duration > target_duration:
-                result = rubberband_to_duration(str(temp_concat), target_duration * 1000, output_file)
+            if total_weight > 0:
+                # Weighted adjustment based on how much each segment exceeded its expected duration
+                current_adjustment = overlap * (current_weight / total_weight)
+                next_adjustment = overlap * (next_weight / total_weight)
             else:
-                shutil.copy2(str(temp_concat), output_file)
-                result = output_file
-        finally:
-            shutil.rmtree(temp_dir2, ignore_errors=True)
+                # Neither segment has overrun, split equally
+                current_adjustment = overlap / 2
+                next_adjustment = overlap / 2
+            
+           
+            # Normal case: weighted adjustment
+            current['centered_end'] -= current_adjustment
+            next_seg['centered_start'] += next_adjustment
+            print(f"   → Adjusted segment {i} by -{current_adjustment:.3f}s, segment {i+1} by +{next_adjustment:.3f}s")
+            
+            # Update remaining overrun amounts after adjustment
+            current['remaining_overrun'] = max(0, current['remaining_overrun'] - current_adjustment)
+            next_seg['remaining_overrun'] = max(0, next_seg['remaining_overrun'] - next_adjustment)
+            
     
-    # Cleanup temp directory if it exists
-    if 'temp_dir' in locals():
+    # ========== BUILD TIMELINE WITH SILENCE ==========
+    print("\n🔇 Building timeline with silence padding...")
+    
+    # Create timeline events (segments + silence gaps)
+    timeline = []
+    current_time = 0.0
+    
+    for i, seg_info in enumerate(segment_info):
+        # Add silence before segment if needed
+        if current_time < seg_info['centered_start']:
+            silence_duration = seg_info['centered_start'] - current_time
+            timeline.append({
+                'type': 'silence',
+                'duration': silence_duration,
+                'start': current_time,
+                'end': seg_info['centered_start']
+            })
+            print(f"   Silence gap {len([t for t in timeline if t['type'] == 'silence'])}: {silence_duration:.3f}s")
+        
+        # Add segment
+        timeline.append({
+            'type': 'audio',
+            'audio_url': seg_info['audio_url'],
+            'duration': seg_info['actual_duration'],
+            'start': seg_info['centered_start'],
+            'end': seg_info['centered_end']
+        })
+        print(f"   Segment {i}: {seg_info['actual_duration']:.3f}s at [{seg_info['centered_start']:.3f}-{seg_info['centered_end']:.3f}]")
+        
+        current_time = seg_info['centered_end']
+    
+    # Add final silence if needed
+    if current_time < target_duration:
+        final_silence = target_duration - current_time
+        timeline.append({
+            'type': 'silence',
+            'duration': final_silence,
+            'start': current_time,
+            'end': target_duration
+        })
+        print(f"   Final silence: {final_silence:.3f}s")
+    
+    # ========== CONCATENATE WITH FFMPEG ==========
+    print(f"\n🎵 Concatenating {len(timeline)} elements...")
+    
+    import tempfile
+    temp_dir = Path(tempfile.mkdtemp())
+    
+    try:
+        # Get audio properties from first audio segment
+        first_audio = next(t for t in timeline if t['type'] == 'audio')['audio_url']
+        probe_cmd = [
+            'ffprobe', '-v', 'error',
+            '-select_streams', 'a:0',
+            '-show_entries', 'stream=sample_rate,channels',
+            '-of', 'json',
+            first_audio
+        ]
+        probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
+        audio_info = json.loads(probe_result.stdout)
+        sample_rate = audio_info['streams'][0]['sample_rate']
+        channels = audio_info['streams'][0]['channels']
+        
+        # Create silence files and build file list
+        filelist_path = temp_dir / "filelist.txt"
+        silence_counter = 0
+        
+        with open(filelist_path, 'w') as f:
+            for element in timeline:
+                if element['type'] == 'silence':
+                    if element['duration'] > 0.001:  # Only create if > 1ms
+                        silence_file = temp_dir / f"silence_{silence_counter}.wav"
+                        silence_cmd = [
+                            'ffmpeg', '-y',
+                            '-f', 'lavfi',
+                            '-i', f'anullsrc=channel_layout={"stereo" if channels == 2 else "mono"}:sample_rate={sample_rate}',
+                            '-t', str(element['duration']),
+                            str(silence_file)
+                        ]
+                        subprocess.run(silence_cmd, capture_output=True, text=True, check=True)
+                        f.write(f"file '{silence_file.absolute()}'\n")
+                        silence_counter += 1
+                else:
+                    # Audio segment
+                    f.write(f"file '{Path(element['audio_url']).absolute()}'\n")
+        
+        # Final concatenation
+        cmd = [
+            'ffmpeg', '-y',
+            '-f', 'concat',
+            '-safe', '0',
+            '-i', str(filelist_path),
+            '-c', 'copy',
+            str(output_file)
+        ]
+        
+        subprocess.run(cmd, capture_output=True, text=True, check=True)
+        
+        # Verify final duration
+        final_duration = get_audio_duration(output_file)
+        print(f"✅ Final duration: {final_duration:.3f}s (target: {target_duration:.3f}s)")
+        
+        if final_duration - target_duration > 0.0:
+            print(f"⚠️  Duration mismatch > 0.1s, applying final trim/pad...")
+            result = rubberband_to_duration(str(output_file), target_duration * 1000, str(output_file))
+        else:
+            result = str(output_file)
+    
+    finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
     
     print("\n" + "="*60)
-    print("✅ CONCATENATION COMPLETE")
+    print("✅ CENTERING AND PADDING COMPLETE")
     print("="*60)
     
     return result

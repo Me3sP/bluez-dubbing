@@ -6,6 +6,9 @@ from dataclasses import dataclass, field
 from typing import List, Tuple, Set 
 import numpy as np
 from abc import ABC, abstractmethod
+from pathlib import Path
+import soundfile as sf
+import math
 
 DETERMINERS = {
     # English
@@ -239,6 +242,78 @@ def create_word_segments(result: dict, segments_out: list[Segment]) -> list[Word
                 word_segments_out.extend(s.words)
 
     return word_segments_out
+
+
+def attach_segment_audio_clips(
+    asr_dump: dict,
+    output_dir: str | Path,
+    min_duration: float,
+    max_duration: float,
+) -> dict:
+    """
+    For each segment in an ASRResponse dump, slice the original audio using [start, end] (seconds).
+    - If duration < min_duration, repeat the clip until >= min_duration.
+    - If duration > max_duration, trim to max_duration.
+    Saves per-segment WAVs and writes their paths to segment['audio_url'].
+
+    Returns the updated dump.
+    """
+    if not isinstance(asr_dump, dict):
+        raise TypeError("asr_dump must be a dict (ASRResponse.model_dump())")
+
+    orig_path = asr_dump.get("audio_url")
+    if not orig_path:
+        raise ValueError("ASR dump is missing 'audio_url' pointing to the original audio")
+
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load original audio
+    audio, sr = sf.read(str(orig_path), always_2d=True)  # shape: [T, C]
+    n_samples, n_channels = audio.shape
+    total_sec = n_samples / float(sr)
+
+    segments = asr_dump.get("segments") or []
+    for idx, seg in enumerate(segments):
+        start = seg.get("start")
+        end = seg.get("end")
+
+        # Validate times
+        if start is None or end is None:
+            continue
+        start = max(0.0, float(start))
+        end = max(start, float(end))
+        if start >= total_sec:
+            continue
+
+        # Clamp end within file
+        end = min(end, total_sec)
+        if end <= start:
+            continue
+
+        s0 = int(round(start * sr))
+        s1 = int(round(end * sr))
+        clip = audio[s0:s1, :]  # [T, C]
+        dur = max(0.0, (s1 - s0) / float(sr))
+        if dur == 0.0:
+            continue
+
+        # If shorter than min, repeat to exceed or meet min
+        if dur < min_duration:
+            need = int(math.ceil((min_duration - 1e-9) / dur))
+            clip = np.vstack([clip] * max(1, need))
+
+        # If longer than max, trim
+        max_len = int(round(max_duration * sr))
+        if max_duration > 0 and clip.shape[0] > max_len:
+            clip = clip[:max_len, :]
+
+        # Save segment wav
+        seg_path = out_dir / f"segment_{idx:04d}_{start:.2f}-{end:.2f}.wav"
+        sf.write(str(seg_path), clip, sr)
+        seg["audio_url"] = str(seg_path)
+
+    return asr_dump
 
 #---- Translation Segment Aligner ----
 
