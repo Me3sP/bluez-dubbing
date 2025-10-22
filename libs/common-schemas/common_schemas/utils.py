@@ -18,7 +18,7 @@ DETERMINERS = {
 
     # 🇫🇷 French
     'fr': {
-        'le', 'la', 'les', 'un', 'une', 'des', 'du', 'de', 'de la', 'de l\'', 'l\'',
+        'le', 'la', 'les', 'un', 'une', 'des', 'du', 'de', 
         'ce', 'cet', 'cette', 'ces',
         'mon', 'ma', 'mes', 'ton', 'ta', 'tes', 'son', 'sa', 'ses',
         'notre', 'nos', 'votre', 'vos', 'leur', 'leurs',
@@ -46,7 +46,7 @@ DETERMINERS = {
 
     # 🇮🇹 Italian
     'it': {
-        'il', 'lo', 'la', 'l\'', 'i', 'gli', 'le', 'uno', 'una', 'un\'', 'un',
+        'il', 'lo', 'la', 'i', 'gli', 'le', 'uno', 'una', 'un',
         'questo', 'questa', 'questi', 'queste', 'quello', 'quella', 'quei', 'quegli', 'quelle',
         'mio', 'mia', 'miei', 'mie', 'tuo', 'tua', 'tuoi', 'tue', 'suo', 'sua', 'suoi', 'sue',
         'nostro', 'nostra', 'nostri', 'nostre', 'vostro', 'vostra', 'vostri', 'vostre',
@@ -180,7 +180,18 @@ TERMINATORS = {
     ]
 }
 
-
+LANGUAGE_MATCHING = { "zh": { "asr": "zh", "translation": "zh-CN", "tts": "zh-CN-XiaoxiaoNeural" },
+                     "en": { "asr": "en", "translation": "en", "tts": "en-US-GuyNeural" },
+                     "fr": { "asr": "fr", "translation": "fr", "tts": "fr-FR-DeniseNeural" },
+                     "de": { "asr": "de", "translation": "de", "tts": "de-DE-KlausNeural" },
+                     "es": { "asr": "es", "translation": "es", "tts": "es-ES-LauraNeural" },
+                     "it": { "asr": "it", "translation": "it", "tts": "it-IT-GiorgioNeural" },
+                     "ja": { "asr": "ja", "translation": "ja", "tts": "ja-JP-HarukaNeural" },
+                     "ko": { "asr": "ko", "translation": "ko", "tts": "ko-KR-SunghwaNeural" },
+                     "pt": { "asr": "pt", "translation": "pt", "tts": "pt-PT-MariaNeural" },
+                     "ru": { "asr": "ru", "translation": "ru", "tts": "ru-RU-DmitryNeural" },
+                     "tr": { "asr": "tr", "translation": "tr", "tts": "tr-TR-EmreNeural" }
+}
 
 # ---- Convert WhisperX result to ASRResponse ----
 def to_word(w: dict, seg_speaker: str | None) -> Word:
@@ -291,9 +302,9 @@ class Aligner(ABC):
             c = text[i]
             if c.isalpha() and not self._is_cjk(c):
                 j = i
-                while i < length and (text[i].isalpha() or text[i] in ["'", "'"]) and not self._is_cjk(text[i]):
+                while i < length and text[i].isalpha()  and not self._is_cjk(text[i]):
                     i += 1
-                token = text[j:i].rstrip("''")
+                token = text[j:i]
                 if token:
                     tokens.append(token)
             elif c.isdigit():
@@ -306,7 +317,7 @@ class Aligner(ABC):
                 while i < length and self._is_cjk(text[i]):
                     i += 1
                 tokens.extend(self._tokenize_cjk(text[j:i], lang))
-            elif c.strip() and re.match(r'[^\w\s]', c) and c not in ["'", "'"]:
+            elif c.strip() and re.match(r'[^\w\s]', c):
                 tokens.append(c)
                 i += 1
             else:
@@ -357,7 +368,7 @@ class Aligner(ABC):
             return " ".join(tokens)
         result = ""
         for i, token in enumerate(tokens):
-            if i > 0 and not self._is_punctuation(token) and tokens[i - 1] not in {'-', "'"}:
+            if i > 0 and not (self._is_punctuation(token) or token=="$") and tokens[i - 1] not in {'-', "'", "’", "$"}:
                 result += " "
             result += token
         return result.strip()
@@ -367,7 +378,7 @@ class Aligner(ABC):
         tokens: List[str],
         boundaries: List[Tuple[int, int]],
         lang: str,
-        max_look_distance: int = 3,
+        max_look_distance: int = 4,
         verbose: bool = False
     ) -> List[Tuple[int, int]]:
         endings = set(self.sentence_endings.get(lang, self.sentence_endings["other"]))
@@ -378,7 +389,6 @@ class Aligner(ABC):
             print(f"🔧 Realigning with sentence endings and determiners (look={max_look_distance})")
 
         for i, (start, end) in enumerate(b):
-            print("startiiiiiiiiiiiiii", start, end)
             if i < len(b) - 1 and end < tok_count:
                 q = end
                 while q < tok_count and self._is_punctuation(tokens[q]):
@@ -393,14 +403,17 @@ class Aligner(ABC):
                         if verbose:
                             print(f"   seg {i}: extended to {end} on terminator '{tokens[j]}'")
                         break
+                    if self._is_punctuation(tokens[j]):
+                        q += 1 # permit to not take punctuation into account in the number of lookahead tokens
                     j += 1
+                    
 
                 if end > start and end <= tok_count and tokens[end - 1].lower() in COMMON_DETERMINERS:
                     end -= 1
                     if verbose:
                         print(f"   seg {i}: moved determiner '{tokens[end]}' to seg {i+1}")
 
-                if end < tok_count and end > start and tokens[end - 1] in {"'", "-"}:
+                if end < tok_count and end > start and tokens[end - 1] in {"'", "-", "’"}:
                     end = min(end + 1, tok_count)
                     if verbose and end < tok_count:
                         print(f"   seg {i}: moved punctuation '{tokens[end - 1]}' to seg {i+1}")
@@ -419,6 +432,8 @@ class Aligner(ABC):
                                 print(f"   seg {i}: pulled back to {new_start} on terminator '{tokens[j]}'")
                             start = new_start
                         break
+                    if self._is_punctuation(tokens[j]):
+                        q -= 1 # permit to not take punctuation into account in the number of lookbehind tokens
                     j -= 1
 
             b[i] = (start, end)
@@ -429,8 +444,6 @@ class Aligner(ABC):
             if i < len(b) - 1:
                 _, next_end = b[i + 1]
                 b[i + 1] = (end, max(next_end, end))
-
-            print("finiiiiiiiiiiiiiiii")
 
         return b
 
@@ -483,7 +496,7 @@ class Aligner(ABC):
 
     @abstractmethod
     def align_segments(self, source_segments: List[str] | None, translated_text: str,
-                      verbose: bool = False, max_look_distance: int = 3, source_metadata: Optional[List[dict]] = None) -> List[AlignedSegment]:
+                      verbose: bool = False, max_look_distance: int = 4, source_metadata: Optional[List[dict]] = None) -> List[AlignedSegment]:
         """Main alignment method."""
         pass
 
@@ -589,7 +602,7 @@ class SophisticatedAligner(Aligner):
         full_target_text: str,
         t2s: Optional[dict],
         verbose: bool = False,
-        max_look_distance: int = 3
+        max_look_distance: int = 4
     ) -> List[AlignedSegment]:
         """
         Apply unified rules to TranslationSegmentAligner output:
@@ -816,7 +829,7 @@ class SophisticatedAligner(Aligner):
         return unused[:max(1, int(len(unused) * ratio))]
 
     def align_segments(self, source_segments: List[str] | None, translated_text: str,
-                      verbose: bool = False, max_look_distance: int = 3, source_metadata: Optional[List[dict]] = None) -> List[AlignedSegment]:
+                      verbose: bool = False, max_look_distance: int = 4, source_metadata: Optional[List[dict]] = None) -> List[AlignedSegment]:
         
         """Main alignment method."""
         
@@ -923,7 +936,7 @@ class ProportionalAligner(Aligner):
         super().__init__()
     
     def align_segments(self, source_segments: List[str] | None, translated_text: str,
-                      verbose: bool = False, max_look_distance: int = 3, source_metadata: Optional[List[dict]] = None) -> List[AlignedSegment]:
+                      verbose: bool = False, max_look_distance: int = 4, source_metadata: Optional[List[dict]] = None) -> List[AlignedSegment]:
         
         """Proportionally allocate target tokens with smart punctuation handling."""
 
@@ -1047,7 +1060,7 @@ class ProportionalAligner(Aligner):
         return aligned_segments
     
     
-def alignerWrapper(input_dict, aligner_model, target_lang, allow_merging=False, max_look_distance=3, verbose=True):
+def alignerWrapper(input_dict, aligner_model, target_lang, allow_merging=False, max_look_distance=4, verbose=True):
 
     aligned_translations = []
     

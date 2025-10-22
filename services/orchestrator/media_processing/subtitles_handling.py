@@ -3,6 +3,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Optional, Literal
 from pathlib import Path
+import shlex
 from common_schemas.models import Word, SubtitleSegment
 import subprocess
 
@@ -600,69 +601,104 @@ def _srt_time_to_ass(srt_time: str) -> str:
     h, m, s = time_part.split(':')
     return f"{int(h)}:{m}:{s}.{ms[:2]}"
 
+def _hex_to_ass_colour(rgb_hex: str) -> str:
+    # Input: "#RRGGBB" => Output: &HAABBGGRR (AA=00 opaque)
+    h = rgb_hex.lstrip("#")
+    if len(h) != 6:
+        return "&H00FFFFFF"  # white fallback
+    r = int(h[0:2], 16); g = int(h[2:4], 16); b = int(h[4:6], 16)
+    return f"&H00{b:02X}{g:02X}{r:02X}"
+
+def _style_to_force_style(style: "SubtitleStyle", mobile: bool = False) -> str:
+    parts = []
+    if getattr(style, "font_name", None):
+        parts.append(f"Fontname={style.font_name}")
+    if getattr(style, "font_size", None):
+        sz = style.mobile_font_size if mobile and getattr(style, "mobile_font_size", None) else style.font_size
+        parts.append(f"Fontsize={int(sz)}")
+    if getattr(style, "font_color", None) and style.font_color.startswith("#"):
+        parts.append(f"PrimaryColour={_hex_to_ass_colour(style.font_color)}")
+    if getattr(style, "outline_color", None) and style.outline_color.startswith("#"):
+        parts.append(f"OutlineColour={_hex_to_ass_colour(style.outline_color)}")
+    if getattr(style, "outline_width", None) is not None:
+        parts.append(f"Outline={int(style.outline_width)}")
+        # A small shadow helps readability when Outline>0
+        if getattr(style, "shadow_offset", None) is not None:
+            parts.append(f"Shadow={int(style.shadow_offset)}")
+    if getattr(style, "bold", None) is not None:
+        parts.append(f"Bold={1 if style.bold else 0}")
+    if getattr(style, "italic", None) is not None:
+        parts.append(f"Italic={1 if style.italic else 0}")
+    mv = style.mobile_margin_v if mobile and getattr(style, "mobile_margin_v", None) else getattr(style, "margin_v", None)
+    if mv is not None:
+        parts.append(f"MarginV={int(mv)}")
+    # Alignment: ASS codes (2=bottom-center, 8=top-center, 5=middle-center)
+    align = getattr(style, "alignment", "bottom")
+    if align == "top":
+        parts.append("Alignment=8")
+    elif align == "middle":
+        parts.append("Alignment=5")
+    else:
+        parts.append("Alignment=2")
+    return ",".join(parts)
+
+def _ensure_ass(sub_path: Path) -> Path:
+    """If not .ass, convert to .ass via ffmpeg and return new path."""
+    if sub_path.suffix.lower() in [".ass", ".ssa"]:
+        return sub_path
+    out_path = sub_path.with_suffix(".ass")
+    # Convert with ffmpeg demux/remux; ffmpeg will map cues appropriately
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", str(sub_path), str(out_path)],
+        check=True, text=True, capture_output=True
+    )
+    return out_path
+
 
 def burn_subtitles_to_video(
     video_path: Path | str,
     subtitle_path: Path | str,
     output_path: Path | str,
-    style: Optional[SubtitleStyle] = None,
-    mobile: bool = False
+    style: SubtitleStyle | None = None,
+    mobile: bool = False,
+    fonts_dir: str | None = None,
 ) -> Path:
     """
-    Burn styled subtitles into video using FFmpeg.
-    
-    Args:
-        video_path: Input video file
-        subtitle_path: Subtitle file (SRT or ASS)
-        output_path: Output video file
-        style: Custom subtitle style (if None, use default)
-        mobile: Use mobile-optimized style
-    
-    Returns:
-        Path to output video
+    Burn subtitles into video using libass.
+    - Converts SRT/VTT to ASS for styling.
+    - Applies force_style derived from SubtitleStyle.
     """
-    video_path = Path(video_path)
-    subtitle_path = Path(subtitle_path)
-    output_path = Path(output_path)
-    
-    # If SRT and style provided, convert to ASS first
-    if subtitle_path.suffix.lower() == '.srt' and style:
-        # Get video dimensions
-        probe_cmd = [
-            'ffprobe', '-v', 'error',
-            '-select_streams', 'v:0',
-            '-show_entries', 'stream=width,height',
-            '-of', 'csv=p=0',
-            str(video_path)
-        ]
-        result = subprocess.run(probe_cmd, capture_output=True, text=True)
-        width, height = map(int, result.stdout.strip().split(','))
-        
-        # Convert to ASS
-        ass_path = subtitle_path.parent / f"{subtitle_path.stem}_styled.ass"
-        subtitle_path = convert_srt_to_ass(
-            subtitle_path, ass_path, style, width, height, mobile
-        )
-    
-    # Burn subtitles with FFmpeg
-    subtitle_filter = f"subtitles='{subtitle_path}'"
-    
-    cmd = [
-        'ffmpeg', '-i', str(video_path),
-        '-vf', subtitle_filter,
-        '-c:a', 'copy',  # Copy audio without re-encoding
-        '-c:v', 'libx264',  # Re-encode video
-        '-preset', 'medium',
-        '-crf', '23',
-        '-y',  # Overwrite output
-        str(output_path)
-    ]
-    
-    print(f"🔥 Burning subtitles to video...")
-    subprocess.run(cmd, check=True)
-    print(f"✅ Subtitles burned: {output_path}")
+    video = Path(video_path)
+    subs = Path(subtitle_path)
+    out = Path(output_path)
+    ass_path = _ensure_ass(subs)
 
-    return str(output_path)
+    force_style = _style_to_force_style(style, mobile) if style else ""
+    # Build subtitles filter args
+    # subtitles=path[:force_style=...][:fontsdir=...]
+    sub_filter = f"subtitles={shlex.quote(str(ass_path))}"
+    if force_style:
+        sub_filter += f":force_style='{force_style}'"
+    if fonts_dir:
+        sub_filter += f":fontsdir={shlex.quote(fonts_dir)}"
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(video),
+        "-vf", sub_filter,
+        "-c:v", "libx264", "-crf", "23", "-preset", "veryfast",
+        "-c:a", "copy",
+        "-movflags", "+faststart",
+        str(out),
+    ]
+    print("🔥 Burning subtitles to video...")
+    # Optional: print cmd for debugging
+    # print("FFmpeg:", " ".join(cmd))
+    try:
+        subprocess.run(cmd, check=True, text=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Failed to burn subtitles:\nSTDOUT:\n{e.stdout}\nSTDERR:\n{e.stderr}")
+    return out
 
 # Apply custom styling
 STYLE_PRESETS = {
@@ -690,5 +726,20 @@ STYLE_PRESETS = {
         outline_width=0,
         margin_v=40,
         mobile_margin_v=60
-    )
+    ),
+    "fantasy": SubtitleStyle(
+        font_name="Uncial Antiqua",   # Use an installed fantasy-style font
+        font_size=28,
+        mobile_font_size=22,
+        font_color="#FFD700",         # Gold
+        outline_color="#3B0066",      # Deep purple outline
+        outline_width=3,
+        shadow_offset=4,
+        background_color=None,        # No background box
+        bold=False,
+        italic=True,
+        margin_v=50,
+        mobile_margin_v=70,
+        alignment="bottom",
+    ),
 }

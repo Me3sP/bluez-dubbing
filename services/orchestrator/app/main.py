@@ -7,11 +7,11 @@ from fastapi import FastAPI, HTTPException, Query
 from common_schemas.models import *
 from preprocessing.media_separation import separation
 from media_processing.subtitles_handling import build_subtitles_from_asr_result, STYLE_PRESETS
-from media_processing.audio_processing import concatenate_audio, get_audio_duration, trim_audio_with_vad
+from media_processing.audio_processing import concatenate_audio, get_audio_duration, trim_audio_with_vad, overlay_on_background
 from media_processing.final_pass import final
 import shutil
 import subprocess
-from common_schemas.utils import map_by_text_overlap, alignerWrapper
+from common_schemas.utils import map_by_text_overlap, alignerWrapper, LANGUAGE_MATCHING
 
 app = FastAPI(title="orchestrator")
 
@@ -31,10 +31,15 @@ async def dub(
     video_url: str,
     target_lang: str = "fr",
     source_lang: str | None = "en",
-    sep_model: str = Query("UVR-MDX-NET-Inst_HQ_3.onnx"),
+    sep_model: str = Query("melband_roformer_big_beta5e.ckpt"),
     asr_model: str = Query("whisperx"),
     tr_model: str = Query("facebook_m2m100"),
     tts_model: str = Query("chatterbox"),
+    audio_sep: bool = Query(True, description="Whether to perform audio source separation"),
+    perform_vad_trimming: bool = Query(True, description="Whether to perform VAD-based silence trimming after TTS"),
+    dubbing_strategy: str = Query("default", description="Dubbing strategy to use, either translation over (original audio ducked) or full replacement"),
+    sophisticated_dub_timing: bool = Query(False, description="Whether to use sophisticated timing for full replacement dubbing strategy"),
+    subtitle: bool = Query(False, description="Whether to include subtitles"),
     mobile_optimized: bool = Query(True, description="Optimize for mobile viewing"),
     allow_short_translations: bool = Query(True, description="Allow short translations for alignment"),
     segments_aligner_model: str = Query("default", description="Model for translated segment alignment with the source segments"),
@@ -144,19 +149,21 @@ async def dub(
             raise HTTPException(400, f"Unsupported file format: {video_url}")
         
         # Separate vocals and background
-        # separation(
-        #     input_file=str(raw_audio_path),
-        #     output_dir=str(preprocessing_out),
-        #     model_filename=sep_model,
-        #     output_format="WAV",
-        #     custom_output_names={"vocals": "vocals", "instrumental": "background"}
-        # )
+        if audio_sep or dubbing_strategy == "full_replacement":
+            print("Performing audio source separation...", file=sys.stderr)
+            separation(
+                input_file=str(raw_audio_path),
+                output_dir=str(preprocessing_out),
+                model_filename=sep_model,
+                output_format="WAV",
+                custom_output_names={"vocals": "vocals", "other": "background"}
+            )
 
         # ========== STEP 2: ASR - Transcribe vocals ==========
-        async with httpx.AsyncClient(timeout=300) as client:
+        async with httpx.AsyncClient(timeout=1200) as client:
             asr_req = ASRRequest(
                 audio_url=str(raw_audio_path),
-                language_hint=source_lang
+                language_hint=LANGUAGE_MATCHING[source_lang]["asr"] if source_lang else None
             )
 
             # Call ASR service for the transcription step without alignement
@@ -201,25 +208,28 @@ async def dub(
 
 
         # ========== STEP 3: Generate Subtitles ==========
-        subtitles_dir = workspace / "subtitles"
-        subtitles_dir.mkdir(exist_ok=True)
+        srt_path_0, vtt_path_0 = None, None
 
-        srt_path_0, vtt_path_0 = build_subtitles_from_asr_result(
-            data=aligned_asr_result.model_dump(),
-            output_dir=subtitles_dir,
-            custom_name="original",
-            formats=["srt", "vtt"],
-            mobile_mode=mobile_optimized
-        )
+        if subtitle:
+            subtitles_dir = workspace / "subtitles"
+            subtitles_dir.mkdir(exist_ok=True)
+
+            srt_path_0, vtt_path_0 = build_subtitles_from_asr_result(
+                data=aligned_asr_result.model_dump(),
+                output_dir=subtitles_dir,
+                custom_name="original",
+                formats=["srt", "vtt"],
+                mobile_mode=mobile_optimized
+            )
 
         # ========== STEP 4: Translation ==========
-        async with httpx.AsyncClient(timeout=600) as client:
+        async with httpx.AsyncClient(timeout=1200) as client:
             # Build translation request from ASR segments
 
             tr_req = TranslateRequest(
                 segments=aligned_asr_result.segments if allow_short_translations else raw_asr_result.segments,
-                source_lang=raw_asr_result.language or source_lang,
-                target_lang=target_lang
+                source_lang=LANGUAGE_MATCHING[source_lang]["translation"] if source_lang else None,
+                target_lang=LANGUAGE_MATCHING[target_lang]["translation"] if target_lang else None
             )
             
             r = await client.post(
@@ -238,7 +248,8 @@ async def dub(
             f.write(tr_result.model_dump_json(indent=2))
 
         # ========== STEP 4.5: Align Translation to Original Segments ==========
-        if (not allow_short_translations) and (len(aligned_asr_result.segments) > 1):  # Only needed if multiple segments
+        if (not allow_short_translations) and (len(aligned_asr_result.segments) > 1) and dubbing_strategy != "full_replacement":  # Only needed if multiple segments and for translation over
+            print("🔄 Aligning translated segments with original ASR segments...", file=sys.stderr)
 
             mappings = map_by_text_overlap( raw_asr_result.model_dump()["segments"], aligned_asr_result.model_dump()["segments"])
 
@@ -257,16 +268,11 @@ async def dub(
         else:
             # Skip alignment, use translation as-is
             print(f"⏭️  Skipping alignment (allow_short_translations={allow_short_translations}, segments={len(aligned_asr_result.segments)})")
-            
-            # Still save the translation result
-            tr_aligned_origin = workspace / "translation" / "translation_aligned_W_origin_result.json"
-            tr_aligned_origin.parent.mkdir(exist_ok=True, parents=True)
-            with open(tr_aligned_origin, "w") as f:
-                f.write(tr_result.model_dump_json(indent=2))
+            tr_aligned_origin = None
         
 
         # ========== STEP 5: TTS - Synthesize dubbed audio ==========
-        async with httpx.AsyncClient(timeout=600) as client:
+        async with httpx.AsyncClient(timeout=1200) as client:
             # Map translated segments to TTS input
             tts_segments = [
                 SegmentAudioIn(
@@ -298,45 +304,49 @@ async def dub(
             f.write(tts_result.model_dump_json(indent=2))
 
         # ========== STEP 5.5: VAD Trimming - Remove silence after speech ==========
-        vad_dir = workspace / "vad_trimmed"
-        vad_dir.mkdir(exist_ok=True)
-        
-        trimmed_segments = []
-        several_seg = False  # Only one segment per audio file from TTS
-        for i, seg in enumerate(tts_result.segments):
-            original_audio = Path(seg.audio_url)
+        if not perform_vad_trimming:
+            print("⏭️  Skipping VAD-based silence trimming after TTS")
+        else:
+            print("🔊 Performing VAD-based silence trimming after TTS...", file=sys.stderr)
+            vad_dir = workspace / "vad_trimmed"
+            vad_dir.mkdir(exist_ok=True)
+            
+            trimmed_segments = []
+            several_seg = False  # Only one segment per audio file from TTS
+            for i, seg in enumerate(tts_result.segments):
+                original_audio = Path(seg.audio_url)
 
-            if not several_seg:
-                trimmed_audio = vad_dir / f"trimmed_{i}_{original_audio.stem}.wav"
-            else:
-                trimmed_audio = vad_dir
-
-            try:
-                # Trim audio to last voice activity
-                actual_durations, output_files = trim_audio_with_vad(
-                    audio_path=seg.audio_url,
-                    output_path=trimmed_audio,
-                    several_seg=several_seg
-                )
-                
-                # Update segment with trimmed audio path
                 if not several_seg:
-                    seg.audio_url = str(trimmed_audio)
+                    trimmed_audio = vad_dir / f"trimmed_{i}_{original_audio.stem}.wav"
                 else:
-                    seg.audio_url = [ str(f) for f in output_files ]
-                trimmed_segments.append(seg)
-                
-            except Exception as e:
-                # If VAD fails, keep original segment
-                print(f"VAD trimming failed for segment {i}: {e}", file=sys.stderr)
-                trimmed_segments.append(seg)
+                    trimmed_audio = vad_dir
+
+                try:
+                    # Trim audio to last voice activity
+                    actual_durations, output_files = trim_audio_with_vad(
+                        audio_path=seg.audio_url,
+                        output_path=trimmed_audio,
+                        several_seg=several_seg
+                    )
+                    
+                    # Update segment with trimmed audio path
+                    if not several_seg:
+                        seg.audio_url = str(trimmed_audio)
+                    else:
+                        seg.audio_url = [ str(f) for f in output_files ]
+                    trimmed_segments.append(seg)
+                    
+                except Exception as e:
+                    # If VAD fails, keep original segment
+                    print(f"VAD trimming failed for segment {i}: {e}", file=sys.stderr)
+                    trimmed_segments.append(seg)
+            
+            # Update tts_result with trimmed segments
+            tts_result.segments = trimmed_segments
         
-        # Update tts_result with trimmed segments
-        tts_result.segments = trimmed_segments
-        
-        # Save updated TTS result with trimmed paths
-        with open(tts_out, "w") as f:
-            f.write(tts_result.model_dump_json(indent=2))
+            # Save updated TTS result with trimmed paths
+            with open(tts_out, "w") as f:
+                f.write(tts_result.model_dump_json(indent=2))
 
         # ========== STEP 6: Audio processing - Resize & concatenate segments ==========
         audio_processing_dir = workspace / "audio_processing"
@@ -345,58 +355,62 @@ async def dub(
         
         # merge dubbed segments
         final_audio_path = audio_processing_dir / "final_dubbed_audio.wav"
-        
-        concatenate_audio(
-            segments=tts_result.segments,
-            output_file=final_audio_path,
-            target_duration=get_audio_duration(raw_audio_path)
-        )
+
+        if dubbing_strategy == "full_replacement":
+            print(f"Using full replacement dubbing strategy with {sophisticated_dub_timing} for the voice over time manipulation", file=sys.stderr)
+            overlay_on_background(tts_result.model_dump()["segments"], background_path=background_path, output_path=final_audio_path, sophisticated=sophisticated_dub_timing)
+
+        else:
+            print("Using translation Over dubbing strategy", file=sys.stderr)
+            concatenate_audio(
+                segments=tts_result.model_dump()["segments"],
+                output_file=final_audio_path,
+                target_duration=get_audio_duration(raw_audio_path)
+            )
+
 
         # ============= STEP 7:WORD ALIGNMENT with ASR on final audio ============
-        # Check if audio is too long
-        final_audio_duration = get_audio_duration(final_audio_path)
-        print(f"Final audio duration: {final_audio_duration:.2f}s", file=sys.stderr)
-        
-        if final_audio_duration > 600:  # 10 minutes
-            print("Warning: Long audio may cause alignment timeout", file=sys.stderr)
         
         # Update tr_result audio_url to point to final dubbed audio
         tr_result.audio_url = str(final_audio_path)
-       
-        # aligned the translated segments with the final audio for better dubbing sync
-        import time
-        
-        alignment_start = time.time()
-        print(f"Starting alignment at {alignment_start}", file=sys.stderr)
-        
-        async with httpx.AsyncClient(timeout=1200) as client:
-            r = await client.post(
-                ASR_URL,
-                params={"model_key": asr_model, "runner_index": 1},
-                json=tr_result.model_dump()
+
+        tr_aligned_tts, srt_path_1, vtt_path_1 = None, None, None
+
+        if subtitle:
+            # aligned the translated segments with the final audio for better dubbing sync
+            import time
+            
+            alignment_start = time.time()
+            print(f"Starting alignment at {alignment_start}", file=sys.stderr)
+            
+            async with httpx.AsyncClient(timeout=1200) as client:
+                r = await client.post(
+                    ASR_URL,
+                    params={"model_key": asr_model, "runner_index": 1},
+                    json=tr_result.model_dump()
+                )
+                if r.status_code != 200:
+                    raise HTTPException(500, f"Second Alignment failed: {r.text}")
+                asr_result = ASRResponse(**r.json()["aligned"])
+            
+            alignment_duration = time.time() - alignment_start
+            print(f"Alignment completed in {alignment_duration:.2f} seconds", file=sys.stderr)
+
+
+            # Save ASR output
+            tr_aligned_tts = workspace / "translation" / "translation_aligned_W_dubbedvoice_result.json"
+            tr_aligned_tts.parent.mkdir(exist_ok=True, parents=True)
+            with open(tr_aligned_tts, "w") as f:
+                f.write(asr_result.model_dump_json(indent=2))
+
+
+            srt_path_1, vtt_path_1 = build_subtitles_from_asr_result(
+                data=asr_result.model_dump(),
+                output_dir=subtitles_dir,
+                custom_name=f"dubbed_{target_lang}",
+                formats=["srt", "vtt"],
+                mobile_mode=mobile_optimized
             )
-            if r.status_code != 200:
-                raise HTTPException(500, f"Second Alignment failed: {r.text}")
-            asr_result = ASRResponse(**r.json()["aligned"])
-        
-        alignment_duration = time.time() - alignment_start
-        print(f"Alignment completed in {alignment_duration:.2f} seconds", file=sys.stderr)
-
-
-        # Save ASR output
-        tr_aligned_tts = workspace / "translation" / "translation_aligned_W_dubbedvoice_result.json"
-        tr_aligned_tts.parent.mkdir(exist_ok=True, parents=True)
-        with open(tr_aligned_tts, "w") as f:
-            f.write(asr_result.model_dump_json(indent=2))
-
-
-        srt_path_1, vtt_path_1 = build_subtitles_from_asr_result(
-            data=asr_result.model_dump(),
-            output_dir=subtitles_dir,
-            custom_name=f"dubbed_{target_lang}",
-            formats=["srt", "vtt"],
-            mobile_mode=mobile_optimized
-        )
 
         # ========== STEP 8: Final pass - Replace video audio & burn subtitles ==========
 
@@ -411,10 +425,12 @@ async def dub(
             video_path=video_url,
             audio_path=final_audio_path,
             dubbed_path=dubbed_path,
-            subtitle_path=vtt_path_1,
             output_path=final_output,
+            subtitle_path=vtt_path_1,
             style=style,
-            mobile_optimized=mobile_optimized
+            mobile_optimized=mobile_optimized,
+            dubbing_strategy=dubbing_strategy,
+            subtitle=subtitle
         )
 
         
@@ -424,20 +440,20 @@ async def dub(
             "audio_path": str(final_audio_path),
             "subtitles": {
             "original": {
-                "srt": str(srt_path_0),
-                "vtt": str(vtt_path_0)
+                "srt": str(srt_path_0) if srt_path_0 else "",
+                "vtt": str(vtt_path_0) if vtt_path_0 else ""
             },
             "aligned": {
-                "srt": str(srt_path_1),
-                "vtt": str(vtt_path_1)
+                "srt": str(srt_path_1) if srt_path_1 else "",
+                "vtt": str(vtt_path_1) if vtt_path_1 else ""
             }
             },
             "intermediate_files": {
             "asr_original": str(asr_out_0_0),
             "asr_aligned": str(asr_out_0_1),
             "translation": str(tr_out),
-            "translation_aligned_W_origin": str(tr_aligned_origin),
-            "translation_aligned_W_dubbedvoice": str(tr_aligned_tts),
+            "translation_aligned_W_origin": str(tr_aligned_origin) if tr_aligned_origin else "",
+            "translation_aligned_W_dubbedvoice": str(tr_aligned_tts) if tr_aligned_tts else "",
             "tts": str(tts_out),
             "vocals": str(vocals_path),
             "background": str(background_path)

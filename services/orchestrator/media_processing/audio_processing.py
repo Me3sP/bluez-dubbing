@@ -12,10 +12,10 @@ import os
 import shutil
 import torch
 import torchaudio
+import tempfile
+
 
 def check_audio_structure(audio_file: str):
-    import torchaudio
-    import torch
 
     # Load Silero VAD model
     model, utils = torch.hub.load(
@@ -55,11 +55,11 @@ def check_audio_structure(audio_file: str):
         torchaudio.save('trimmed_output.wav', trimmed_waveform, sr)
         print(f"Saved trimmed audio (duration: {trim_sample/sr:.2f}s)")
 
-    import matplotlib.pyplot as plt
-
     signal, fs = torchaudio.load(audio_file)
     signal = signal.squeeze()
     time = torch.linspace(0, signal.shape[0]/fs, steps=signal.shape[0])
+
+    import matplotlib.pyplot as plt
 
     plt.figure(figsize=(12, 4))
     plt.plot(time, signal)
@@ -74,8 +74,8 @@ def check_audio_structure(audio_file: str):
             plt.axvspan(seg['start'], seg['end'], alpha=0.3, color='green')
     
     plt.show()
-
     from IPython.display import Audio
+
     return Audio(audio_file)
 
 
@@ -294,22 +294,19 @@ def rubberband_to_duration(in_wav, target_ms, out_wav):
             pad = np.zeros((pad_samples, y2_output.shape[1]), dtype=y2_output.dtype)
             y2_output = np.vstack([y2_output, pad])
         print(f"   Padded {pad_samples} samples")
-    elif current_length > target_samples:
-        # Trim excess
-        if y2_output.ndim == 1:
-            y2_output = y2_output[:target_samples]
-        else:
-            y2_output = y2_output[:target_samples, :]
-        print(f"   Trimmed {current_length - target_samples} samples")
+    # elif current_length > target_samples:
+    #     # Trim excess
+    #     if y2_output.ndim == 1:
+    #         y2_output = y2_output[:target_samples]
+    #     else:
+    #         y2_output = y2_output[:target_samples, :]
+    #     print(f"   Trimmed {current_length - target_samples} samples")
     
     # Write output
     sf.write(out_wav, y2_output, sr)
     print(f"   ✅ Saved: {out_wav}")
     
     return out_wav
-
-
-
 
 def adjust_audio_speed(input_files: List[Dict], output_dir: Optional[Path] = None) -> List[Dict]:
     """
@@ -376,68 +373,7 @@ def adjust_audio_speed(input_files: List[Dict], output_dir: Optional[Path] = Non
     return resized
 
 
-def link_audio_segments_simple(audio_files, output_file, crossfade_duration=0.5):
-    """
-    Simplified version: just link audio files with crossfade (no timing adjustment).
-    
-    Args:
-        audio_files (list): List of paths to audio files to be linked
-        output_file (str): Path for the output linked audio file
-        crossfade_duration (float): Duration of crossfade between segments in seconds (default: 0.5)
-    
-    Returns:
-        str: Path to the linked audio file
-    """
-    if len(audio_files) < 2:
-        raise ValueError("At least 2 audio files are required for linking")
-    
-    # Build ffmpeg command with crossfade filters
-    cmd = ['ffmpeg', '-y']  # -y to overwrite output file
-    
-    # Add input files
-    for audio_file in audio_files:
-        cmd.extend(['-i', audio_file])
-    
-    # Build filter complex for crossfading
-    filter_parts = []
-    
-    # For each pair of adjacent files, create a crossfade
-    for i in range(len(audio_files) - 1):
-        if i == 0:
-            # First crossfade with triangular curve for smooth transition
-            filter_parts.append(f"[0][1]acrossfade=d={crossfade_duration}:c1=tri:c2=tri[cf{i}]")
-        else:
-            # Subsequent crossfades
-            filter_parts.append(f"[cf{i-1}][{i+1}]acrossfade=d={crossfade_duration}:c1=tri:c2=tri[cf{i}]")
-    
-    # Combine all filter parts
-    filter_complex = ";".join(filter_parts)
-    
-    # Add filter complex to command
-    cmd.extend(['-filter_complex', filter_complex])
-    
-    # Map the final output
-    final_output = f"cf{len(audio_files) - 2}" if len(audio_files) > 2 else "cf0"
-    cmd.extend(['-map', f'[{final_output}]'])
-    
-    # Add output file
-    cmd.append(output_file)
-    
-    print(f"Linking {len(audio_files)} audio segments with {crossfade_duration}s crossfade...")
-    print(f"Command: {' '.join(cmd)}")
-    
-    try:
-        # Execute ffmpeg command
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        print(f"Successfully linked audio segments to: {output_file}")
-        return output_file
-    except subprocess.CalledProcessError as e:
-        print(f"Error linking audio segments: {e}")
-        print(f"FFmpeg stderr: {e.stderr}")
-        raise
-
-
-def concatenate_audio(segments, output_file, target_duration: Optional[float] = None, min_silence_gap=0.02, max_silence_gap=1.0):
+def concatenate_audio(segments, output_file, target_duration: Optional[float] = None):
     """
     Concatenate audio segments with intelligent duration adjustment.
     
@@ -457,7 +393,7 @@ def concatenate_audio(segments, output_file, target_duration: Optional[float] = 
         raise ValueError("At least 1 segment is required for concatenation")
     
     # Extract audio files
-    audio_files = [seg.audio_url for seg in segments]
+    audio_files = [seg["audio_url"] for seg in segments]
     
     # ========== SINGLE SEGMENT CASE ==========
     if len(segments) == 1:
@@ -483,15 +419,15 @@ def concatenate_audio(segments, output_file, target_duration: Optional[float] = 
     total_expected_duration = 0.0
     
     for i, seg in enumerate(segments):
-        expected_duration = seg.end - seg.start
-        actual_duration = get_audio_duration(Path(seg.audio_url))
+        expected_duration = seg["end"] - seg["start"]
+        actual_duration = get_audio_duration(Path(seg["audio_url"]))
         is_longer = actual_duration > expected_duration
         
         segment_info.append({
             'index': i,
-            'audio_url': seg.audio_url,
-            'start': seg.start,
-            'end': seg.end,
+            'audio_url': seg["audio_url"],
+            'start': seg["start"],
+            'end': seg["end"],
             'expected_duration': expected_duration,
             'actual_duration': actual_duration,
             'is_longer': is_longer,
@@ -604,11 +540,11 @@ def concatenate_audio(segments, output_file, target_duration: Optional[float] = 
         print(f"\n🔇 Adding {silence_needed:.2f}s weighted silence")
         
         # Calculate original gaps
-        original_gaps = [segments[0].start]  # Before first
+        original_gaps = [segments[0]["start"]]  # Before first
         for i in range(len(segments) - 1):
-            original_gaps.append(segments[i + 1].start - segments[i].end)
-        original_gaps.append(target_duration - segments[-1].end)  # After last
-        
+            original_gaps.append(segments[i + 1]["start"] - segments[i]["end"])
+        original_gaps.append(target_duration - segments[-1]["end"])  # After last
+
         total_original_gaps = sum(original_gaps)
         
         # Weight silence proportionally
@@ -621,6 +557,11 @@ def concatenate_audio(segments, output_file, target_duration: Optional[float] = 
         print(f"   Silence gaps: {[f'{s:.2f}' for s in silence_gaps]}")
         
         result = _concat_with_weighted_silence(processed_files, output_file, silence_gaps)
+        # Check result audio duration and adjust only if longer than target
+        actual_duration = get_audio_duration(Path(result))
+        if actual_duration > target_duration:
+            print(f"   Result duration ({actual_duration:.3f}s) exceeds target ({target_duration:.3f}s) by {actual_duration - target_duration:.3f}s")
+            result = rubberband_to_duration(result, target_duration * 1000, output_file)
     
     else:
         # Processed duration exceeds target: compress final concat to exact target
@@ -631,7 +572,12 @@ def concatenate_audio(segments, output_file, target_duration: Optional[float] = 
         try:
             temp_concat = temp_dir2 / "temp_concat.wav"
             _simple_concat(processed_files, str(temp_concat))
-            result = rubberband_to_duration(str(temp_concat), target_duration * 1000, output_file)
+            actual_duration = get_audio_duration(temp_concat)
+            if actual_duration > target_duration:
+                result = rubberband_to_duration(str(temp_concat), target_duration * 1000, output_file)
+            else:
+                shutil.copy2(str(temp_concat), output_file)
+                result = output_file
         finally:
             shutil.rmtree(temp_dir2, ignore_errors=True)
     
@@ -769,219 +715,249 @@ def _concat_with_weighted_silence(audio_files, output_file, silence_gaps):
         # Clean up temporary directory
         shutil.rmtree(temp_dir, ignore_errors=True)
 
-def overlay_on_background_librosa(dubbed_segments, background_path: Path, output_path: Path, 
-                                   original_duration: float = None, background_volume=0.12):
+def overlay_on_background_default(
+    dubbed_segments: List[Dict],
+    background_path: Path | str,
+    output_path: Path | str,
+    ducking_db: float = 0.0,
+) -> str:
     """
-    Overlay dubbed segments on background with intelligent ducking and smart timing.
-    - Each segment starts at its scheduled time OR right after the previous one ends
-    - No clipping: extends to last segment
-    - Dynamic ducking with smooth transitions
-    - Voice-over always louder than background
-    
+    Overlay processed dubbed segments onto the background track.
+
     Args:
-        dubbed_segments: List of dicts with 'path', 'start', 'end', 'speaker_id'
-        background_path: Path to background audio
-        output_path: Path for output file
-        original_duration: Optional original duration (will extend if needed)
-        background_volume: Background volume during speech (0.05-0.25, default 0.12)
+        dubbed_segments: Sequence of dicts with at least start, end, audio_url (seconds + file path).
+        background_path: Path to the separated instrumental/background audio.
+        output_path: Destination WAV path for the mixed result.
+        original_duration: Optional clamp/pad duration in seconds.
+        ducking_db: Gain reduction (dB) applied to the background during overlay (default 0).
+
+    Returns:
+        Path to the rendered mix as string.
     """
-    print(f"🎵 Processing {len(dubbed_segments)} segments with librosa...")
-    
     if not dubbed_segments:
-        print("⚠️  No segments to process!")
-        return None
-    
-    # Step 1: Calculate actual timing for each segment
-    print("📐 Calculating segment timing...")
-    adjusted_segments = []
-    previous_end_time = 0.0
-    
-    for i, seg in enumerate(dubbed_segments):
-        scheduled_start = seg["start"]
-        scheduled_end = seg["end"]
-        
-        # Load segment to get actual duration
-        seg_audio, seg_sr = librosa.load(seg["path"], sr=44100, mono=False)
-        if seg_audio.ndim == 1:
-            actual_duration = len(seg_audio) / seg_sr
-        else:
-            actual_duration = seg_audio.shape[1] / seg_sr
-        
-        # Determine actual start time
-        if i == 0:
-            # First segment always starts at scheduled time
-            actual_start = scheduled_start
-        else:
-            # Start at scheduled time OR right after previous segment (whichever is later)
-            actual_start = max(scheduled_start, previous_end_time)
-        
-        actual_end = actual_start + actual_duration
-        
-        adjusted_segments.append({
-            "path": seg["path"],
-            "scheduled_start": scheduled_start,
-            "scheduled_end": scheduled_end,
-            "actual_start": actual_start,
-            "actual_end": actual_end,
-            "actual_duration": actual_duration,
-            "speaker_id": seg.get("speaker_id")
-        })
-        
-        previous_end_time = actual_end
-        
-        # Log timing info
-        if actual_start != scheduled_start:
-            print(f"  Segment {i}: Scheduled {scheduled_start:.2f}s → Delayed to {actual_start:.2f}s (previous segment overlap)")
-        else:
-            print(f"  Segment {i}: Starts at scheduled time {actual_start:.2f}s")
-    
-    # Calculate required duration (extend to last segment)
-    last_segment_end = adjusted_segments[-1]["actual_end"]
-    required_duration = max(original_duration or 0, last_segment_end + 0.5)
-    
-    print(f"📏 Required duration: {required_duration:.2f}s (last segment ends: {last_segment_end:.2f}s)")
-    
-    # Step 2: Load and prepare background audio
-    background, sr = librosa.load(str(background_path), sr=44100, mono=False)
-    if background.ndim == 1:
-        background = np.stack([background, background])
-    
-    print(f"🎼 Background loaded: {background.shape[1]/sr:.2f}s @ {sr}Hz")
-    
-    # Calculate target samples
-    target_samples = int(required_duration * sr)
-    
-    # Extend/loop background if needed
-    if background.shape[1] < target_samples:
-        times_to_loop = int(np.ceil(target_samples / background.shape[1]))
-        background = np.tile(background, (1, times_to_loop))
-        print(f"🔁 Looped background {times_to_loop} times")
-    
-    # Trim to exact length
-    background = background[:, :target_samples]
-    
-    # Step 3: Create voice track with adjusted timing
-    voice_track = np.zeros((2, target_samples))
-    
-    print("🎤 Overlaying voice segments with adjusted timing...")
-    for i, seg in enumerate(adjusted_segments):
-        seg_audio, seg_sr = librosa.load(seg["path"], sr=sr, mono=False)
-        
-        if seg_audio.ndim == 1:
-            seg_audio = np.stack([seg_audio, seg_audio])
-        
-        # Use ACTUAL start time (not scheduled)
-        start_sample = int(seg["actual_start"] * sr)
-        seg_length = seg_audio.shape[1]
-        end_sample = min(start_sample + seg_length, target_samples)
-        actual_length = end_sample - start_sample
-        
-        if actual_length > 0:
-            # Place segment at actual start time
-            voice_track[:, start_sample:end_sample] = seg_audio[:, :actual_length]
-            print(f"  ✓ Segment {i}: {seg['actual_start']:.2f}s - {seg['actual_end']:.2f}s "
-                  f"(duration: {seg['actual_duration']:.2f}s)")
-    
-    # Step 4: Create dynamic ducking mask based on ACTUAL timing
-    print("📉 Creating intelligent ducking mask...")
-    ducking_envelope = np.ones(target_samples)  # Start at full volume
-    
-    for seg in adjusted_segments:
-        start_sample = int(seg["actual_start"] * sr)
-        end_sample = int(min(seg["actual_end"], required_duration) * sr)
-        
-        # Attack/release times
-        attack_samples = int(0.1 * sr)  # 100ms fade down
-        release_samples = int(0.3 * sr)  # 300ms fade up
-        
-        # Calculate attack region (fade down before speech)
-        attack_start = max(0, start_sample - attack_samples)
-        attack_region = np.linspace(1.0, background_volume, attack_samples)
-        attack_end = min(start_sample, target_samples)
-        attack_len = attack_end - attack_start
-        if attack_len > 0:
-            ducking_envelope[attack_start:attack_end] = np.minimum(
-                ducking_envelope[attack_start:attack_end],
-                attack_region[:attack_len]
-            )
-        
-        # Hold region (low volume during speech)
-        hold_end = min(end_sample, target_samples)
-        if start_sample < hold_end:
-            ducking_envelope[start_sample:hold_end] = np.minimum(
-                ducking_envelope[start_sample:hold_end],
-                background_volume
-            )
-        
-        # Release region (fade up after speech)
-        release_start = end_sample
-        release_end = min(end_sample + release_samples, target_samples)
-        release_region = np.linspace(background_volume, 1.0, release_samples)
-        release_len = release_end - release_start
-        if release_len > 0:
-            ducking_envelope[release_start:release_end] = np.minimum(
-                ducking_envelope[release_start:release_end],
-                release_region[:release_len]
-            )
-    
-    # Smooth the envelope to avoid clicks
-    window_size = int(0.01 * sr)  # 10ms smoothing
-    if window_size % 2 == 0:
-        window_size += 1
-    ducking_envelope = signal.savgol_filter(ducking_envelope, window_size, 3)
-    
-    # Apply ducking to background
-    background_ducked = background * ducking_envelope
-    
-    # Normalize voice track to prevent clipping
-    voice_max = np.max(np.abs(voice_track))
-    if voice_max > 0:
-        voice_track = voice_track / voice_max * 0.9  # Leave headroom
-        print(f"🎚️  Voice normalized (peak: {voice_max:.3f})")
-    
-    # Mix: voice (foreground) + ducked background
-    final_mix = voice_track * 1.2 + background_ducked  # Boost voice slightly
-    
-    # Master limiting (prevent clipping)
-    mix_max = np.max(np.abs(final_mix))
-    if mix_max > 1.0:
-        final_mix = final_mix / mix_max * 0.98
-        print(f"🎚️  Limited mix (peak was: {mix_max:.3f})")
-    
-    # Apply gentle compression for consistent loudness
-    final_mix = np.tanh(final_mix * 1.1) * 0.95
-    
-    # Save output
-    sf.write(str(output_path), final_mix.T, sr, subtype='PCM_16')
-    print(f"✅ Final audio saved: {output_path}")
-    print(f"📊 Duration: {final_mix.shape[1]/sr:.2f}s, Sample rate: {sr}Hz")
-    
-    # Return adjusted segments info for subtitle timing correction
-    return {
-        "output_path": str(output_path),
-        "adjusted_segments": adjusted_segments
-    }
+        raise ValueError("dubbed_segments must not be empty")
 
+    background_path = Path(background_path)
+    output_path = Path(output_path)
 
-def overlay_on_background(dubbed_segments, background_path: Path, output_path: Path, 
-                          original_duration: float = None, background_volume=0.12):
+    if not background_path.exists():
+        raise FileNotFoundError(f"Background track not found: {background_path}")
+
+    bg_wave, sr = sf.read(str(background_path), always_2d=True)
+    bg_wave = bg_wave.astype(np.float32)
+
+    if ducking_db != 0.0:
+        gain = 10 ** (ducking_db / 20.0)
+        bg_wave *= gain
+
+    mix = bg_wave.copy()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+
+        for idx, seg in enumerate(dubbed_segments):
+            start = float(seg.get("start", 0.0))
+            end = float(seg.get("end", start))
+            audio_url = seg.get("audio_url")
+
+            if audio_url is None:
+                continue
+
+            if end <= start:
+                continue
+
+            source_path = Path(audio_url)
+            if not source_path.exists():
+                continue
+
+            target_ms = (end - start) * 1000.0
+            adjusted_path = source_path
+            source_duration = get_audio_duration(str(source_path))
+
+            if abs(source_duration - (end - start)) > 1e-3:
+                adjusted_path = tmpdir / f"segment_{idx:03d}.wav"
+                rubberband_to_duration(str(source_path), target_ms, str(adjusted_path))
+
+            seg_wave, seg_sr = sf.read(str(adjusted_path), always_2d=True)
+            seg_wave = seg_wave.astype(np.float32)
+
+            if seg_sr != sr:
+                seg_wave = librosa.resample(seg_wave.T, orig_sr=seg_sr, target_sr=sr).T
+
+            if seg_wave.shape[1] != mix.shape[1]:
+                if seg_wave.shape[1] == 1 and mix.shape[1] == 2:
+                    seg_wave = np.tile(seg_wave, (1, 2))
+                elif seg_wave.shape[1] == 2 and mix.shape[1] == 1:
+                    seg_wave = seg_wave.mean(axis=1, keepdims=True)
+                else:
+                    raise ValueError(
+                        f"Unsupported channel layout: segment {seg_wave.shape[1]} vs background {mix.shape[1]}"
+                    )
+
+            start_idx = int(round(start * sr))
+            end_idx = start_idx + seg_wave.shape[0]
+
+            if end_idx > mix.shape[0]:
+                pad = np.zeros((end_idx - mix.shape[0], mix.shape[1]), dtype=np.float32)
+                mix = np.vstack([mix, pad])
+
+            mix[start_idx:end_idx, :seg_wave.shape[1]] += seg_wave
+
+    peak = np.max(np.abs(mix))
+    if peak > 1.0:
+        mix /= peak * 1.01
+
+    sf.write(str(output_path), mix, sr)
+    return str(output_path)
+
+def overlay_on_background_sophisticated(
+    dubbed_segments: List[Dict],
+    background_path: Path | str,
+    output_path: Path | str,
+    ducking_db: float = 0.0,
+) -> str:
     """
-    Overlay with intelligent ducking and smart timing using librosa.
-    Returns adjusted segment timing information.
+    Create a single speech track using concatenate_audio logic (timing-aware, duration-controlled),
+    then overlay it on top of the background with optional dynamic ducking.
+
+    Args:
+        dubbed_segments: List of dicts with at least 'audio_url', 'start', 'end' (seconds).
+        background_path: Path to instrumental/background audio.
+        output_path: Destination WAV path for the mixed result.
+        ducking_db: Background gain (dB) under speech. Use negative values to reduce background during speech.
+
+    Returns:
+        Path to the rendered mix as string.
     """
-    return overlay_on_background_librosa(
-        dubbed_segments, background_path, output_path,
-        original_duration, background_volume
-    )
+    if not dubbed_segments:
+        raise ValueError("dubbed_segments must not be empty")
+
+    background_path = Path(background_path)
+    output_path = Path(output_path)
+
+    if not background_path.exists():
+        raise FileNotFoundError(f"Background track not found: {background_path}")
+
+    # Determine target duration from background
+    target_duration = get_audio_duration(str(background_path))
 
 
-def get_audio_duration(audio_path: Path) -> float:
-        """Get duration of audio file in seconds"""
-        import subprocess
-        result = subprocess.run([
-            'ffprobe', '-v', 'error',
-            '-show_entries', 'format=duration',
-            '-of', 'default=noprint_wrappers=1:nokey=1',
-            str(audio_path)
-        ], capture_output=True, text=True, check=True)
-        return float(result.stdout.strip())
+    # Build the single speech track using the same logic as concatenate_audio
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+        speech_track = tmpdir / "speech_concat.wav"
+        concatenate_audio(dubbed_segments, str(speech_track), target_duration=target_duration)
+
+        # Load background and speech
+        bg_wave, bg_sr = sf.read(str(background_path), always_2d=True)
+        sp_wave, sp_sr = sf.read(str(speech_track), always_2d=True)
+
+        # Resample speech to background SR if needed
+        if sp_sr != bg_sr:
+            sp_wave = librosa.resample(sp_wave.T, orig_sr=sp_sr, target_sr=bg_sr).T
+
+        # Match channel count (map to background layout)
+        if sp_wave.shape[1] != bg_wave.shape[1]:
+            if sp_wave.shape[1] == 1 and bg_wave.shape[1] == 2:
+                sp_wave = np.tile(sp_wave, (1, 2))
+            elif sp_wave.shape[1] == 2 and bg_wave.shape[1] == 1:
+                sp_wave = sp_wave.mean(axis=1, keepdims=True)
+            else:
+                raise ValueError(
+                    f"Unsupported channel layout: speech {sp_wave.shape[1]} vs background {bg_wave.shape[1]}"
+                )
+
+        # Pad/trim to exact background length (concatenate_audio targets this already, but guard anyway)
+        bg_len = bg_wave.shape[0]
+        sp_len = sp_wave.shape[0]
+        if sp_len < bg_len:
+            pad = np.zeros((bg_len - sp_len, sp_wave.shape[1]), dtype=sp_wave.dtype)
+            sp_wave = np.vstack([sp_wave, pad])
+        elif sp_len > bg_len:
+            sp_wave = sp_wave[:bg_len, :]
+
+        # Prepare dynamic ducking envelope from speech
+        # ducking_db < 0 lowers background under speech proportionally to speech amplitude
+        if ducking_db != 0.0:
+            # Mono envelope from speech magnitude
+            env = np.mean(np.abs(sp_wave), axis=1).astype(np.float32)
+
+            # Smooth envelope with a short moving average (~20 ms)
+            win = max(1, int(0.02 * bg_sr))
+            if win > 1:
+                kernel = np.ones(win, dtype=np.float32) / win
+                env = np.convolve(env, kernel, mode="same")
+
+            # Normalize to [0,1]
+            max_env = float(env.max()) if env.size > 0 else 0.0
+            if max_env > 1e-8:
+                env = env / max_env
+            else:
+                env = np.zeros_like(env, dtype=np.float32)
+
+            # Optional: longer release smoothing (~100 ms) to avoid pumping
+            rel_win = max(1, int(0.10 * bg_sr))
+            if rel_win > 1:
+                kernel_rel = np.ones(rel_win, dtype=np.float32) / rel_win
+                env = np.convolve(env, kernel_rel, mode="same")
+
+            # Gain curve: 1.0 (no speech) to min_gain (full speech)
+            # If ducking_db is negative, min_gain < 1 (reduce). If positive, min_gain > 1 (boost).
+            min_gain = float(10.0 ** (ducking_db / 20.0))
+            gain_curve = 1.0 + (min_gain - 1.0) * env  # shape [T]
+            # Expand to channels
+            gain_curve = gain_curve[:, None]
+        else:
+            gain_curve = 1.0
+
+        # Mix: ducked background + speech
+        bg_wave = bg_wave.astype(np.float32)
+        sp_wave = sp_wave.astype(np.float32)
+        mix = bg_wave * gain_curve + sp_wave
+
+        # Normalize to prevent clipping
+        peak = float(np.max(np.abs(mix))) if mix.size else 0.0
+        if peak > 1.0:
+            mix = mix / (peak * 1.01)
+
+        sf.write(str(output_path), mix, bg_sr)
+
+    return str(output_path)
+
+# overlay functions selector
+def overlay_on_background(dubbed_segments: List[Dict],
+    background_path: Path | str,
+    output_path: Path | str,
+    ducking_db: float = 0.0,
+    sophisticated: bool = False
+) -> str:
+    """
+    Overlay dubbed segments onto background track using selected method.
+
+    Args:
+        dubbed_segments: List of dicts with at least 'audio_url', 'start', 'end' (seconds).
+        background_path: Path to instrumental/background audio.
+        output_path: Destination WAV path for the mixed result.
+        ducking_db: Background gain (dB) under speech.
+        sophisticated: If True, use sophisticated overlay method.
+
+    Returns:
+        Path to the rendered mix as string.
+    """
+    if sophisticated:
+        return overlay_on_background_sophisticated(
+            dubbed_segments, background_path, output_path, ducking_db
+        )
+    else:
+        return overlay_on_background_default(
+            dubbed_segments, background_path, output_path, ducking_db
+        )
+
+def get_audio_duration(path: Path | str) -> float:
+    """Get audio duration in seconds with high precision."""
+    out = subprocess.check_output(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+        text=True
+    ).strip()
+    return float(out)
