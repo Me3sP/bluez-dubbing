@@ -25,8 +25,8 @@ def convert_video_to_audio(video_file: str, audio_dir: str):
     return _RAW_AUDIO_FILE
 
 # Perform source separation and return the path to the instrumental audio file
-def separation(input_file: str, output_dir: str, model_filename: str, output_format: str, custom_output_names: dict) -> str:
-    separator = Separator(output_format=output_format, output_dir=output_dir)
+def separation(input_file: str, output_dir: str, model_filename: str, output_format: str, custom_output_names: dict,  model_file_dir: str = "/tmp/audio-separator-models/") -> str:
+    separator = Separator(output_format=output_format, output_dir=output_dir, model_file_dir=model_file_dir)
     separator.load_model(model_filename=model_filename)
     output_files = separator.separate(input_file, custom_output_names=custom_output_names)
     return output_files[0] if output_files else ""

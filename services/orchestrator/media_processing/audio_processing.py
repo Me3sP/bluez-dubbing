@@ -79,34 +79,36 @@ def check_audio_structure(audio_file: str):
     return Audio(audio_file)
 
 
+# ...existing code...
 def trim_audio_with_vad(
     audio_path: str | Path,
     output_path: str | Path = "",
     sampling_rate: int = 16000,
-    max_silence_gap_ms: int = 1000,
     several_seg: bool = False
 ) -> Union[ Tuple[float, str], Tuple[List[float], List[str]] ]:
     """
-    Trim audio file at the first silence gap longer than max_silence_gap_ms.
-    
+    Trim audio to the speech region:
+      - If several_seg=False: keep audio from just before the first speech to just after the last speech.
+      - If several_seg=True: export each speech segment as an individual file.
+
     Args:
         audio_path: Input audio file path
         output_path: Output trimmed audio file path (or directory if several_seg=True)
         sampling_rate: Target sampling rate for VAD model
-        max_silence_gap_ms: Maximum silence gap allowed between speech segments (default: 1000ms)
+        max_silence_gap_ms: Deprecated/ignored (kept for backward compatibility)
         several_seg: If True, save individual speech segments instead of one trimmed file
-    
+
     Returns:
-        If several_seg=False: Duration of trimmed audio in seconds
-        If several_seg=True: List of durations for each saved segment
+        If several_seg=False: (duration_seconds, output_path)
+        If several_seg=True: (list_of_durations, list_of_paths)
     """
     audio_path = Path(audio_path)
     output_path = Path(output_path)
-    
+
     # Auto-add .wav extension if missing and saving single file
     if not several_seg and not output_path.suffix:
         output_path = output_path.with_suffix('.wav')
-    
+
     # Load Silero VAD model
     model, utils = torch.hub.load(
         repo_or_dir='snakers4/silero-vad',
@@ -114,119 +116,78 @@ def trim_audio_with_vad(
         force_reload=False,
         onnx=False
     )
-    
     (get_speech_timestamps, _, read_audio, *_) = utils
-    
-    # Read audio file
+
+    # Read audio for VAD (16 kHz mono expected by Silero)
     wav = read_audio(str(audio_path), sampling_rate=sampling_rate)
-    
-    # Get speech timestamps with return_seconds=True to get time in seconds
+
+    # Get speech timestamps in seconds
     speech_timestamps = get_speech_timestamps(
         wav,
         model,
-        return_seconds=True  # Get timestamps in seconds instead of samples
+        return_seconds=True
     )
-    
+
+    # If no speech, copy original
     if not speech_timestamps:
-        # No speech detected, keep original file
-        if audio_path != output_path:
+        if audio_path != output_path and not several_seg:
             import shutil
             shutil.copy(audio_path, output_path)
-        return 0.0 if not several_seg else []
-    
-    # Load original audio for trimming (preserve original sample rate)
+            return 0.0, str(output_path)
+        return ([], []) if several_seg else (0.0, str(audio_path))
+
+    # Load original audio for precise trimming (preserve original SR)
     waveform, original_sr = torchaudio.load(str(audio_path))
-    
-    # Find first silence gap longer than max_silence_gap_ms
-    max_silence_gap_sec = max_silence_gap_ms / 1000.0
-    cut_index = None
-    
-    for i in range(len(speech_timestamps) - 1):
-        current_end = speech_timestamps[i]['end']
-        next_start = speech_timestamps[i + 1]['start']
-        silence_gap = next_start - current_end
-        
-        if silence_gap > max_silence_gap_sec:
-            # Found a gap longer than threshold - cut here
-            cut_index = i
-            print(f"✂️  Found silence gap of {silence_gap:.2f}s between segments {i} and {i+1}")
-            print(f"   Will use segments 0 to {i}")
-            break
-    
-    # Determine which segments to use
-    if cut_index is None:
-        # No long gap found, use all segments
-        segments_to_use = speech_timestamps
-        print(f"✅ No silence gap > {max_silence_gap_sec:.2f}s found, using all {len(speech_timestamps)} segments")
-    else:
-        # Use segments up to and including the one before the gap
-        segments_to_use = speech_timestamps[:cut_index + 1]
-    
+
     if several_seg:
-        # Save individual speech segments
-        # Use output_path as directory (strip extension if present)
+        # Export each speech segment with small padding
         output_dir = output_path.parent / output_path.stem if output_path.suffix else output_path
         output_dir.mkdir(parents=True, exist_ok=True)
-        
-        durations = []
-        output_files = []
-        for i, seg in enumerate(segments_to_use):
-            # Convert timestamps to samples
+
+        durations: List[float] = []
+        output_files: List[str] = []
+
+        padding_samples = int(0.05 * original_sr)  # 50 ms
+        for i, seg in enumerate(speech_timestamps):
             start_sample = int(seg['start'] * original_sr)
             end_sample = int(seg['end'] * original_sr)
-            
-            # Add small padding (e.g., 50ms on each side)
-            padding_samples = int(0.05 * original_sr)
+
             start_sample = max(0, start_sample - padding_samples)
             end_sample = min(waveform.shape[1], end_sample + padding_samples)
-            
-            # Extract segment
+
             segment_waveform = waveform[:, start_sample:end_sample]
 
-            # Get the base name of the audio file (without extension)
             audio_basename = audio_path.stem
             segment_file = output_dir / f"{audio_basename}_segment_{i:03d}.wav"
-            # Save segment
             torchaudio.save(str(segment_file), segment_waveform, original_sr)
-            output_files.append(str(segment_file))
-            
+
             duration = segment_waveform.shape[1] / original_sr
             durations.append(duration)
-            
-            print(f"💾 Saved segment {i}: {segment_file}")
-            print(f"   Duration: {duration:.2f}s ({seg['start']:.2f}s - {seg['end']:.2f}s)")
-        
-        print(f"\n✅ Saved {len(durations)} segments to {output_dir}")
-        print(f"   Total duration: {sum(durations):.2f}s")
-        
-        return durations, output_files
-    
-    else:
-        # Original behavior: save one trimmed file up to cut point
-        cut_point = segments_to_use[-1]['end']
-        
-        # Convert cut point from seconds to samples
-        trim_sample = int(cut_point * original_sr)
-        
-        # Add small padding (e.g., 100ms) to avoid cutting off speech
-        padding_samples = int(0.1 * original_sr)
-        trim_sample = min(trim_sample + padding_samples, waveform.shape[1])
-        
-        # Trim waveform
-        trimmed_waveform = waveform[:, :trim_sample]
-        
-        # Save trimmed audio
-        torchaudio.save(str(output_path), trimmed_waveform, original_sr)
-        
-        # Return duration in seconds
-        duration = trimmed_waveform.shape[1] / original_sr
-        
-        print(f"💾 Saved trimmed audio: {output_path}")
-        print(f"   Original duration: {waveform.shape[1] / original_sr:.2f}s")
-        print(f"   Trimmed duration: {duration:.2f}s")
-        print(f"   Removed: {(waveform.shape[1] / original_sr) - duration:.2f}s")
+            output_files.append(str(segment_file))
 
-        return duration, str(output_path)
+        return durations, output_files
+
+    # Single trimmed file: keep from first start to last end, with small padding
+    first_start = float(speech_timestamps[0]['start'])
+    last_end = float(speech_timestamps[-1]['end'])
+
+    pre_pad = 0.10  # 100 ms before first speech
+    post_pad = 0.10  # 100 ms after last speech
+
+    start_sample = max(0, int(round((first_start - pre_pad) * original_sr)))
+    end_sample = min(waveform.shape[1], int(round((last_end + post_pad) * original_sr)))
+
+    if end_sample <= start_sample:
+        # Fallback: copy original if indices collapse
+        import shutil
+        shutil.copy(audio_path, output_path)
+        return 0.0, str(output_path)
+
+    trimmed_waveform = waveform[:, start_sample:end_sample]
+    torchaudio.save(str(output_path), trimmed_waveform, original_sr)
+
+    duration = trimmed_waveform.shape[1] / original_sr
+    return duration, str(output_path)
 
 def rubberband_to_duration(in_wav, target_ms, out_wav):
     """
@@ -850,27 +811,26 @@ def overlay_on_background_default(
     return str(output_path)
 
 def overlay_on_background_sophisticated(
-    dubbed_segments: List[Dict],
+    dubbed_segments: List[Dict] | None,
     background_path: Path | str,
     output_path: Path | str,
     ducking_db: float = 0.0,
+    speech_track: Path | str | None = None,
 ) -> str:
     """
-    Create a single speech track using concatenate_audio logic (timing-aware, duration-controlled),
+    Create a single speech track using the concatenate_audio logic (if segments given),
     then overlay it on top of the background with optional dynamic ducking.
 
     Args:
-        dubbed_segments: List of dicts with at least 'audio_url', 'start', 'end' (seconds).
+        dubbed_segments: Optional list of dicts with at least 'audio_url','start','end'.
         background_path: Path to instrumental/background audio.
         output_path: Destination WAV path for the mixed result.
-        ducking_db: Background gain (dB) under speech. Use negative values to reduce background during speech.
+        ducking_db: Background gain (dB) under speech. Negative to duck.
+        speech_track: Optional prebuilt speech track to use directly.
 
     Returns:
         Path to the rendered mix as string.
     """
-    if not dubbed_segments:
-        raise ValueError("dubbed_segments must not be empty")
-
     background_path = Path(background_path)
     output_path = Path(output_path)
 
@@ -880,87 +840,83 @@ def overlay_on_background_sophisticated(
     # Determine target duration from background
     target_duration = get_audio_duration(str(background_path))
 
-
-    # Build the single speech track using the same logic as concatenate_audio
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir = Path(tmpdir)
-        speech_track = tmpdir / "speech_concat.wav"
-        concatenate_audio(dubbed_segments, str(speech_track), target_duration=target_duration)
-
-        # Load background and speech
+    # Resolve speech path: use provided file or build a temp one from segments
+    if speech_track is not None:
+        speech_path = Path(speech_track)
+        if not speech_path.exists():
+            raise FileNotFoundError(f"Speech track not found: {speech_path}")
+        # No temp dir needed when using a provided speech track
         bg_wave, bg_sr = sf.read(str(background_path), always_2d=True)
-        sp_wave, sp_sr = sf.read(str(speech_track), always_2d=True)
+        sp_wave, sp_sr = sf.read(str(speech_path), always_2d=True)
+    else:
+        if not dubbed_segments:
+            raise ValueError("Either speech_track must be provided or dubbed_segments must be non-empty.")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            speech_path = tmpdir / "speech_concat.wav"
+            concatenate_audio(dubbed_segments, str(speech_path), target_duration=target_duration)
 
-        # Resample speech to background SR if needed
-        if sp_sr != bg_sr:
-            sp_wave = librosa.resample(sp_wave.T, orig_sr=sp_sr, target_sr=bg_sr).T
+            # Load background and speech
+            bg_wave, bg_sr = sf.read(str(background_path), always_2d=True)
+            sp_wave, sp_sr = sf.read(str(speech_path), always_2d=True)
 
-        # Match channel count (map to background layout)
-        if sp_wave.shape[1] != bg_wave.shape[1]:
-            if sp_wave.shape[1] == 1 and bg_wave.shape[1] == 2:
-                sp_wave = np.tile(sp_wave, (1, 2))
-            elif sp_wave.shape[1] == 2 and bg_wave.shape[1] == 1:
-                sp_wave = sp_wave.mean(axis=1, keepdims=True)
-            else:
-                raise ValueError(
-                    f"Unsupported channel layout: speech {sp_wave.shape[1]} vs background {bg_wave.shape[1]}"
-                )
+            # The rest of the processing below will run after this block ends,
+            # but we keep arrays in memory; the temp file can be cleaned up safely.
 
-        # Pad/trim to exact background length (concatenate_audio targets this already, but guard anyway)
-        bg_len = bg_wave.shape[0]
-        sp_len = sp_wave.shape[0]
-        if sp_len < bg_len:
-            pad = np.zeros((bg_len - sp_len, sp_wave.shape[1]), dtype=sp_wave.dtype)
-            sp_wave = np.vstack([sp_wave, pad])
-        elif sp_len > bg_len:
-            sp_wave = sp_wave[:bg_len, :]
+    # Resample speech to background SR if needed
+    if sp_sr != bg_sr:
+        sp_wave = librosa.resample(sp_wave.T, orig_sr=sp_sr, target_sr=bg_sr).T
 
-        # Prepare dynamic ducking envelope from speech
-        # ducking_db < 0 lowers background under speech proportionally to speech amplitude
-        if ducking_db != 0.0:
-            # Mono envelope from speech magnitude
-            env = np.mean(np.abs(sp_wave), axis=1).astype(np.float32)
-
-            # Smooth envelope with a short moving average (~20 ms)
-            win = max(1, int(0.02 * bg_sr))
-            if win > 1:
-                kernel = np.ones(win, dtype=np.float32) / win
-                env = np.convolve(env, kernel, mode="same")
-
-            # Normalize to [0,1]
-            max_env = float(env.max()) if env.size > 0 else 0.0
-            if max_env > 1e-8:
-                env = env / max_env
-            else:
-                env = np.zeros_like(env, dtype=np.float32)
-
-            # Optional: longer release smoothing (~100 ms) to avoid pumping
-            rel_win = max(1, int(0.10 * bg_sr))
-            if rel_win > 1:
-                kernel_rel = np.ones(rel_win, dtype=np.float32) / rel_win
-                env = np.convolve(env, kernel_rel, mode="same")
-
-            # Gain curve: 1.0 (no speech) to min_gain (full speech)
-            # If ducking_db is negative, min_gain < 1 (reduce). If positive, min_gain > 1 (boost).
-            min_gain = float(10.0 ** (ducking_db / 20.0))
-            gain_curve = 1.0 + (min_gain - 1.0) * env  # shape [T]
-            # Expand to channels
-            gain_curve = gain_curve[:, None]
+    # Match channel count (map to background layout)
+    if sp_wave.shape[1] != bg_wave.shape[1]:
+        if sp_wave.shape[1] == 1 and bg_wave.shape[1] == 2:
+            sp_wave = np.tile(sp_wave, (1, 2))
+        elif sp_wave.shape[1] == 2 and bg_wave.shape[1] == 1:
+            sp_wave = sp_wave.mean(axis=1, keepdims=True)
         else:
-            gain_curve = 1.0
+            raise ValueError(
+                f"Unsupported channel layout: speech {sp_wave.shape[1]} vs background {bg_wave.shape[1]}"
+            )
 
-        # Mix: ducked background + speech
-        bg_wave = bg_wave.astype(np.float32)
-        sp_wave = sp_wave.astype(np.float32)
-        mix = bg_wave * gain_curve + sp_wave
+    # Pad/trim to exact background length (concatenate_audio targets this already, but guard anyway)
+    bg_len = bg_wave.shape[0]
+    sp_len = sp_wave.shape[0]
+    if sp_len < bg_len:
+        pad = np.zeros((bg_len - sp_len, sp_wave.shape[1]), dtype=sp_wave.dtype)
+        sp_wave = np.vstack([sp_wave, pad])
+    elif sp_len > bg_len:
+        sp_wave = sp_wave[:bg_len, :]
 
-        # Normalize to prevent clipping
-        peak = float(np.max(np.abs(mix))) if mix.size else 0.0
-        if peak > 1.0:
-            mix = mix / (peak * 1.01)
+    # Prepare dynamic ducking envelope from speech
+    if ducking_db != 0.0:
+        env = np.mean(np.abs(sp_wave), axis=1).astype(np.float32)
+        win = max(1, int(0.02 * bg_sr))
+        if win > 1:
+            kernel = np.ones(win, dtype=np.float32) / win
+            env = np.convolve(env, kernel, mode="same")
+        max_env = float(env.max()) if env.size > 0 else 0.0
+        env = (env / max_env) if max_env > 1e-8 else np.zeros_like(env, dtype=np.float32)
+        rel_win = max(1, int(0.10 * bg_sr))
+        if rel_win > 1:
+            kernel_rel = np.ones(rel_win, dtype=np.float32) / rel_win
+            env = np.convolve(env, kernel_rel, mode="same")
+        min_gain = float(10.0 ** (ducking_db / 20.0))
+        gain_curve = 1.0 + (min_gain - 1.0) * env
+        gain_curve = gain_curve[:, None]
+    else:
+        gain_curve = 1.0
 
-        sf.write(str(output_path), mix, bg_sr)
+    # Mix: ducked background + speech
+    bg_wave = bg_wave.astype(np.float32)
+    sp_wave = sp_wave.astype(np.float32)
+    mix = bg_wave * gain_curve + sp_wave
 
+    # Normalize to prevent clipping
+    peak = float(np.max(np.abs(mix))) if mix.size else 0.0
+    if peak > 1.0:
+        mix = mix / (peak * 1.01)
+
+    sf.write(str(output_path), mix, bg_sr)
     return str(output_path)
 
 # overlay functions selector
@@ -968,7 +924,8 @@ def overlay_on_background(dubbed_segments: List[Dict],
     background_path: Path | str,
     output_path: Path | str,
     ducking_db: float = 0.0,
-    sophisticated: bool = False
+    sophisticated: bool = False,
+    speech_track: Path | str | None = None,
 ) -> str:
     """
     Overlay dubbed segments onto background track using selected method.
@@ -985,7 +942,7 @@ def overlay_on_background(dubbed_segments: List[Dict],
     """
     if sophisticated:
         return overlay_on_background_sophisticated(
-            dubbed_segments, background_path, output_path, ducking_db
+            dubbed_segments, background_path, output_path, ducking_db, speech_track
         )
     else:
         return overlay_on_background_default(

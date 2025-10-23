@@ -244,7 +244,7 @@ def create_word_segments(result: dict, segments_out: list[Segment]) -> list[Word
     return word_segments_out
 
 
-def attach_segment_audio_clips(
+def _attach_segment_audio_clips_per_segment(
     asr_dump: dict,
     output_dir: str | Path,
     min_duration: float,
@@ -315,6 +315,130 @@ def attach_segment_audio_clips(
 
     return asr_dump
 
+def _attach_segment_audio_clips_one_per_speaker(
+    asr_dump: dict,
+    output_dir: str | Path,
+    min_duration: float,
+    max_duration: float,
+) -> dict:
+    """
+    Build a single reference audio per speaker and assign it to all that speaker's segments.
+    - Group segments by `speaker_id`.
+    - For each speaker, pick the longest raw segment (by end-start) as the reference.
+    - If reference < min_duration, repeat until >= min; if > max_duration (>0), trim to max.
+    - Save one WAV per speaker and set seg['audio_url'] to that same file for uniformity.
+
+    Returns the updated dump.
+    """
+    if not isinstance(asr_dump, dict):
+        raise TypeError("asr_dump must be a dict (ASRResponse.model_dump())")
+
+    orig_path = asr_dump.get("audio_url")
+    if not orig_path:
+        raise ValueError("ASR dump is missing 'audio_url' pointing to the original audio")
+
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load original audio (T x C)
+    audio, sr = sf.read(str(orig_path), always_2d=True)
+    n_samples, _ = audio.shape
+    total_sec = n_samples / float(sr)
+
+    segments = asr_dump.get("segments") or []
+
+    # Helper: sanitize speaker id for filenames
+    def _safe_name(s):
+        s = "unknown" if s in (None, "") else str(s)
+        return re.sub(r"[^A-Za-z0-9_.-]+", "_", s)[:64]
+
+    # Group segments by speaker_id with their slice metadata
+    speakers: dict[str, list[tuple[int, float, float, int, int, float]]] = {}
+    for idx, seg in enumerate(segments):
+        start = seg.get("start")
+        end = seg.get("end")
+        if start is None or end is None:
+            continue
+        start = max(0.0, float(start))
+        end = max(start, float(end))
+        if start >= total_sec:
+            continue
+        end = min(end, total_sec)
+        if end <= start:
+            continue
+
+        s0 = int(round(start * sr))
+        s1 = int(round(end * sr))
+        dur = max(0.0, (s1 - s0) / float(sr))
+        if dur <= 0.0:
+            continue
+
+        spk = seg.get("speaker_id") or "unknown"
+        speakers.setdefault(str(spk), []).append((idx, start, end, s0, s1, dur))
+
+    # For each speaker, pick longest raw slice, normalize to [min,max], save once, assign to all segments
+    for spk, items in speakers.items():
+        if not items:
+            continue
+
+        # Choose the longest
+        longest = max(items, key=lambda x: x[5])  # x[5] = dur
+        _, start, end, s0, s1, dur = longest
+
+        clip = audio[s0:s1, :]  # [T, C]
+
+        # Repeat to reach min_duration (if requested)
+        if min_duration and dur < min_duration:
+            reps = int(math.ceil((min_duration - 1e-9) / max(dur, 1e-9)))
+            clip = np.vstack([clip] * max(1, reps))
+            dur = clip.shape[0] / float(sr)
+
+        # Trim to max_duration (if > 0)
+        if max_duration and max_duration > 0:
+            max_len = int(round(max_duration * sr))
+            if clip.shape[0] > max_len:
+                clip = clip[:max_len, :]
+
+        # Save per-speaker reference file
+        spk_name = _safe_name(spk)
+        seg_path = out_dir / f"speaker_{spk_name}_ref.wav"
+        sf.write(str(seg_path), clip, sr)
+
+        # Assign same audio_url to all segments of this speaker
+        for (idx, *_rest) in items:
+            segments[idx]["audio_url"] = str(seg_path)
+
+    # Segments with no valid audio remain unchanged
+    return asr_dump
+
+def attach_segment_audio_clips(
+    asr_dump: dict,
+    output_dir: str | Path,
+    min_duration: float,
+    max_duration: float,
+    one_per_speaker: bool = False,
+) -> dict:
+    """
+    Attach audio clips to each segment in the ASRResponse dump.
+    Can either create one clip per segment or one clip per speaker.
+
+    Parameters:
+    - asr_dump: dict from ASRResponse.model_dump()
+    - output_dir: directory to save segment audio files
+    - min_duration: minimum duration (seconds) for each clip
+    - max_duration: maximum duration (seconds) for each clip (0 = no limit)
+    - one_per_speaker: if True, create one clip per speaker; else one per segment
+
+    Returns the updated dump with 'audio_url' in each segment.
+    """
+    if one_per_speaker:
+        return _attach_segment_audio_clips_one_per_speaker(
+            asr_dump, output_dir, min_duration, max_duration
+        )
+    else:
+        return _attach_segment_audio_clips_per_segment(
+            asr_dump, output_dir, min_duration, max_duration
+        )
 #---- Translation Segment Aligner ----
 
 @dataclass

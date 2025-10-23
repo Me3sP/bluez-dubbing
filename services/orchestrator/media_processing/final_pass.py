@@ -92,10 +92,9 @@ def final(
     dubbed_path: Path | str,
     output_path: Path | str,
     subtitle_path: Path | str | None = None,
-    style: Optional[SubtitleStyle] = None,
+    sub_style: Optional[SubtitleStyle] = None,
     mobile_optimized: bool = False,
     dubbing_strategy: str = "default",
-    subtitle: bool = False
 ) -> None:
     """
     Replace video's audio stream with dubbed audio or add voice-over, then burn subtitles.
@@ -107,11 +106,11 @@ def final(
         dubbing_strategy=dubbing_strategy
     )
 
-    if subtitle:
+    if sub_style is not None and subtitle_path is not None:
         burn_subtitles_to_video(
         video_path=dubbed_path,  # dubbed video
         subtitle_path=subtitle_path,  # SRT/ASS file
         output_path=output_path,  # Final output path
-        style=style,
+        style=sub_style,
         mobile=mobile_optimized
     )

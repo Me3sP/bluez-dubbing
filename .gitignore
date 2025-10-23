@@ -13,6 +13,7 @@ wheels/
 out/
 outs/
 logs/
+models_cache/
 model_cache/
 cache/
 assets/not_keep/

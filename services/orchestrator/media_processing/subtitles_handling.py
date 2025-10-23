@@ -1,294 +1,191 @@
 import json
 from pathlib import Path
 from dataclasses import dataclass
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Tuple
 from pathlib import Path
 import shlex
 from common_schemas.models import Word, SubtitleSegment
 import subprocess
 
-class ProfessionalSubtitleBuilder:
+
+class SegmentCopySubtitleBuilder:
     """
-    Builds professional-grade subtitles from word segments.
-    
-    Standards:
-    - Max 2 lines per subtitle
-    - Max 42 characters per line
-    - Max reading speed: 17-20 CPS (characters per second)
-    - Min duration: 0.7 seconds
-    - Max duration: 7 seconds
-    - Min gap between subtitles: 0.1 seconds
-    - Respect sentence boundaries
-    - Balance line lengths
+    Simple and robust subtitle builder:
+    - Use data['segments'] as ground truth (start, end, text).
+    - Copy text as-is into cues.
+    - If text is too long, wrap into 1-2 lines per cue up to max_chars_per_line.
+    - If still too long for 2 lines, split into multiple cues with proportional timing.
+    - Never drop words or punctuation.
     """
-    
     def __init__(
         self,
         max_chars_per_line: int = 42,
         max_lines: int = 2,
-        max_cps: float = 20.0,
-        min_cps: float = 5.0,
         min_duration: float = 0.7,
         max_duration: float = 7.0,
-        min_gap: float = 0.1,
-        hard_break_chars: str = ".!?",
-        soft_break_chars: str = ",;:",
-        mobile_mode: bool = False,  # NEW: Mobile optimization
+        mobile_mode: bool = True,
     ):
-        # Apply mobile-specific constraints
         if mobile_mode:
-            self.max_chars_per_line = 30  # Shorter lines for mobile
-            self.max_lines = 1  # Prefer single line
-            self.max_chars = 30
-            self.max_cps = 18.0  # Slightly slower for readability
-        else:
-            self.max_chars_per_line = max_chars_per_line
-            self.max_lines = max_lines
-            self.max_chars = max_chars_per_line * max_lines
-            self.max_cps = max_cps
-        
-        self.min_cps = min_cps
+            max_chars_per_line = 30
+            max_lines = 2  # keep 2 lines for readability on mobile
+        self.max_chars_per_line = max_chars_per_line
+        self.max_lines = max_lines
+        self.max_chars = max_chars_per_line * max_lines
         self.min_duration = min_duration
         self.max_duration = max_duration
-        self.min_gap = min_gap
-        self.hard_break_chars = hard_break_chars
-        self.soft_break_chars = soft_break_chars
-        self.mobile_mode = mobile_mode
 
-    
-    def build_subtitles(self, words: List[Word]) -> List[SubtitleSegment]:
+    def build_from_segments(self, segments_json: List[dict]) -> List[SubtitleSegment]:
+        out: List[SubtitleSegment] = []
+        for seg in segments_json:
+            text = (seg.get("text") or "").strip()
+            if not text:
+                continue
+            start = float(seg["start"])
+            end = float(seg["end"])
+            duration = max(0.01, end - start)
+
+            chunks = self._chunk_text(text)
+
+            # Fast path: short text fits in a single cue
+            if len(chunks) == 1 and sum(len(line) for line in chunks[0]) <= self.max_chars:
+                out.append(SubtitleSegment(
+                    start=start, end=end, text="\n".join(chunks[0]), lines=chunks[0]
+                ))
+                continue
+
+            # Allocate time proportionally across chunks by character count
+            char_counts = [sum(len(line) for line in c) for c in chunks]
+            total_chars = max(1, sum(char_counts))
+
+            durations = [max(self.min_duration, duration * (cc / total_chars)) for cc in char_counts]
+            sum_durs = sum(durations)
+            if sum_durs > duration:
+                scale = duration / sum_durs
+                durations = [max(0.01, d * scale) for d in durations]
+
+            t = start
+            for lines, d in zip(chunks, durations):
+                t_end = min(end, t + max(0.01, d))
+                out.append(SubtitleSegment(
+                    start=t, end=t_end, text="\n".join(lines), lines=lines
+                ))
+                t = t_end
+
+            # Ensure last chunk ends exactly at the original end
+            if out and out[-1].end < end - 1e-3:
+                out[-1].end = end
+
+        return out
+
+    def _chunk_text(self, text: str) -> List[List[str]]:
         """
-        Build subtitle segments from word list.
-        
-        Args:
-            words: List of Word objects with timing information
-            
-        Returns:
-            List of SubtitleSegment objects
+        Break text into chunks; each chunk has 1-2 lines within max_chars_per_line.
         """
-        if not words:
-            return []
-        
-        segments = []
-        current_words = []
-        
-        for i, word in enumerate(words):
-            current_words.append(word)
-            
-            # Check if we should break here
-            should_break = self._should_break(
-                current_words, 
-                word, 
-                i < len(words) - 1 and words[i + 1] or None
-            )
-            
-            if should_break or i == len(words) - 1:
-                segment = self._create_segment(current_words)
-                if segment:
-                    segments.append(segment)
-                current_words = []
-        
-        # Post-process: merge very short segments and split very long ones
-        segments = self._post_process_segments(segments)
-        
-        return segments
-    
-    def _should_break(
-        self, 
-        current_words: List[Word], 
-        current_word: Word,
-        next_word: Optional[Word]
-    ) -> bool:
-        """Determine if we should break the subtitle here."""
-        if not current_words:
-            return False
-        
-        # Calculate current segment stats
-        text = " ".join(w.text for w in current_words)
-        start = current_words[0].start
-        end = current_words[-1].end
-        duration = end - start
-        char_count = len(text)
-        cps = char_count / duration if duration > 0 else 0
-        
-        # 1. Hard break: sentence ending punctuation
-        if current_word.text.rstrip()[-1:] in self.hard_break_chars:
-            # Check if there's a significant pause after
-            if next_word and (next_word.start - end) > 0.3:
-                return True
-        
-        # 2. Character limit exceeded
-        if char_count >= self.max_chars:
-            return True
-        
-        # 3. Reading speed too fast
-        if cps > self.max_cps and len(current_words) > 3:
-            return True
-        
-        # 4. Duration limits
-        if duration >= self.max_duration:
-            return True
-        
-        # 5. Soft break: comma or semicolon with pause
-        if current_word.text.rstrip()[-1:] in self.soft_break_chars:
-            if next_word and (next_word.start - end) > 0.2:
-                if char_count >= self.max_chars * 0.6:  # At least 60% full
-                    return True
-        
-        # 6. Natural pause between words
-        if next_word:
-            gap = next_word.start - end
-            if gap > 0.5 and char_count >= self.max_chars * 0.5:
-                return True
-        
-        return False
-    
-    def _create_segment(self, words: List[Word]) -> Optional[SubtitleSegment]:
-        """Create a subtitle segment from words."""
-        if not words:
-            return None
-        
-        text = " ".join(w.text for w in words)
-        start = words[0].start
-        end = words[-1].end
-        duration = end - start
-        
-        # Skip if too short
-        if duration < self.min_duration and len(words) < 2:
-            return None
-        
-        # Split into lines
-        lines = self._split_into_lines(text)
-        
-        return SubtitleSegment(
-            start=start,
-            end=end,
-            text=text,
-            lines=lines
-        )
-    
-    def _split_into_lines(self, text: str) -> List[str]:
-        """Split text into balanced lines respecting word boundaries."""
-        if len(text) <= self.max_chars_per_line:
-            return [text]
-        
-        # Mobile mode: prefer single line with abbreviations
-        if self.mobile_mode:
-            return self._mobile_optimize_text(text)
-        
-        # Try to split at natural break points
         words = text.split()
-        
-        if len(words) == 1:
-            # Single long word - keep as is
-            return [text]
-        
-        # Find best split point
-        mid_point = len(text) // 2
-        best_split = 0
-        min_diff = float('inf')
-        
-        current_len = 0
-        for i, word in enumerate(words[:-1]):
-            current_len += len(word) + 1  # +1 for space
-            diff = abs(current_len - mid_point)
-            
-            # Check if both lines would be within limit
-            line1 = " ".join(words[:i+1])
-            line2 = " ".join(words[i+1:])
-            
-            if (len(line1) <= self.max_chars_per_line and 
-                len(line2) <= self.max_chars_per_line and 
-                diff < min_diff):
-                min_diff = diff
-                best_split = i + 1
-        
-        if best_split > 0:
-            line1 = " ".join(words[:best_split])
-            line2 = " ".join(words[best_split:])
-            return [line1, line2]
-        
-        # Fallback: force split at character limit
-        return [text[:self.max_chars_per_line], text[self.max_chars_per_line:]]
-    
-    def _post_process_segments(self, segments: List[SubtitleSegment]) -> List[SubtitleSegment]:
-        """Post-process segments to fix issues."""
-        if not segments:
-            return []
-        
-        processed = []
+        chunks: List[List[str]] = []
         i = 0
-        
-        while i < len(segments):
-            current = segments[i]
-            
-            # Check if segment is too short
-            if current.duration < self.min_duration and i < len(segments) - 1:
-                next_seg = segments[i + 1]
-                
-                # Try to merge with next if gap is small
-                gap = next_seg.start - current.end
-                combined_text = f"{current.text} {next_seg.text}"
-                
-                if (gap < self.min_gap and 
-                    len(combined_text) <= self.max_chars):
-                    # Merge segments
-                    merged = SubtitleSegment(
-                        start=current.start,
-                        end=next_seg.end,
-                        text=combined_text,
-                        lines=self._split_into_lines(combined_text)
-                    )
-                    processed.append(merged)
-                    i += 2
-                    continue
-            
-            # Check if reading speed is too slow
-            if current.cps < self.min_cps and current.duration > 2.0:
-                # Shorten duration
-                target_duration = current.char_count / self.min_cps
-                current.end = current.start + target_duration
-            
-            processed.append(current)
-            i += 1
-        
-        return processed
-    
-    def _mobile_optimize_text(self, text: str) -> List[str]:
-        """Optimize text for mobile by abbreviating if needed."""
-        if len(text) <= self.max_chars_per_line:
-            return [text]
-        
-        # Try common abbreviations
-        abbreviations = {
-            "and": "&",
-            "you": "u",
-            "are": "r",
-            "with": "w/",
-            "without": "w/o",
-            "because": "bc",
-            "before": "b4",
-        }
-        
-        words = text.split()
-        abbreviated = []
-        
-        for word in words:
-            lower_word = word.lower().strip('.,!?;:')
-            if lower_word in abbreviations:
-                # Preserve punctuation
-                punct = ''.join(c for c in word if c in '.,!?;:')
-                abbreviated.append(abbreviations[lower_word] + punct)
-            else:
-                abbreviated.append(word)
-        
-        abbreviated_text = " ".join(abbreviated)
-        
-        # # If still too long, truncate with ellipsis
-        # if len(abbreviated_text) > self.max_chars_per_line:
-        #     return [abbreviated_text[:self.max_chars_per_line - 3] + "..."]
-        
-        return [abbreviated_text]
+
+        while i < len(words):
+            line1: List[str] = []
+            line2: List[str] = []
+
+            # Fill line 1
+            while i < len(words):
+                candidate = (" ".join(line1 + [words[i]])).strip()
+                if len(candidate) <= self.max_chars_per_line or not line1:
+                    if len(candidate) > self.max_chars_per_line and line1:
+                        break
+                    line1.append(words[i])
+                    i += 1
+                else:
+                    break
+
+            # Fill line 2 (if allowed)
+            if self.max_lines > 1 and i < len(words):
+                while i < len(words):
+                    candidate = (" ".join(line2 + [words[i]])).strip()
+                    if len(candidate) <= self.max_chars_per_line or not line2:
+                        if len(candidate) > self.max_chars_per_line and line2:
+                            break
+                        line2.append(words[i])
+                        i += 1
+                    else:
+                        break
+                # Balance lines for nicer layout
+                line1, line2 = self._balance_lines(line1, line2)
+
+            lines = [" ".join(line1)]
+            if line2:
+                lines.append(" ".join(line2))
+            chunks.append(lines)
+
+        return chunks
+
+    def _balance_lines(self, l1: List[str], l2: List[str]) -> Tuple[List[str], List[str]]:
+        """
+        Move last word(s) from line 1 to line 2 to balance lengths.
+        """
+        def L(s: List[str]) -> int:
+            return len(" ".join(s)) if s else 0
+
+        s1, s2 = L(l1), L(l2)
+        while l2 is not None and (s1 - s2) > 6 and len(l1) > 1:
+            w = l1.pop()
+            l2.insert(0, w)
+            s1, s2 = L(l1), L(l2)
+        return l1, l2
+
+
+def build_subtitles_from_asr_result(
+    data: Path | str | dict | List[dict],
+    output_dir: Path | str,
+    custom_name: Optional[str] = None,
+    formats: List[str] = ["srt", "vtt"],
+    mobile_mode: bool = True,
+) -> List[str]:
+    # Load JSON if a path is provided
+    if isinstance(data, (str, Path)):
+        with open(data, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+    # If a full ASR dict with 'segments' is provided, use the simple builder
+    segments: List[SubtitleSegment]
+    if isinstance(data, dict) and "segments" in data:
+        seg_json = [s for s in data["segments"] if s and s.get("text")]
+        builder = SegmentCopySubtitleBuilder(mobile_mode=mobile_mode)
+        segments = builder.build_from_segments(seg_json)
+    elif isinstance(data, list):
+        # Assume list of segments in dict form
+        seg_json = [s for s in data if s and s.get("text")]
+        builder = SegmentCopySubtitleBuilder(mobile_mode=mobile_mode)
+        segments = builder.build_from_segments(seg_json)
+    else:
+        raise ValueError("Invalid data format for subtitles generation.")
+
+    # Write outputs
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    name = custom_name if custom_name else "result"
+    suffix = "_mobile" if mobile_mode else ""
+
+    out_paths = []
+    for fmt in formats:
+        out_paths.append(write_subtitles(
+            segments,
+            output_dir / f"{name}{suffix}_subtitles",
+            format=fmt
+        ))
+
+    # Stats
+    print(f"\n📊 Subtitle Statistics ({'Mobile' if mobile_mode else 'Desktop'} Mode):")
+    print(f"   Total segments: {len(segments)}")
+    if segments:
+        print(f"   Avg duration: {sum(s.duration for s in segments) / len(segments):.2f}s")
+        print(f"   Avg CPS: {sum(s.cps for s in segments) / len(segments):.2f}")
+        print(f"   Avg chars/subtitle: {sum(s.char_count for s in segments) / len(segments):.0f}")
+
+    return out_paths
 
 
 def format_timestamp(seconds: float, format: str = "srt") -> str:
@@ -352,74 +249,6 @@ def write_subtitles(
     print(f"✅ Wrote {len(segments)} subtitle segments to {output_path}")
 
     return str(output_path)
-
-
-# Example usage function
-def build_subtitles_from_asr_result(
-    data: Path | str | dict | List[dict],
-    output_dir: Path | str,
-    custom_name: Optional[str] = None,
-    formats: List[str] = ["srt", "vtt"],
-    mobile_mode: bool = True,  # NEW
-) -> List[str]:
-    """
-    Build professional subtitles from ASR result JSON.
-    
-    Args:
-        data: ASR result (path, dict, or list of words)
-        output_dir: Directory to save subtitle files
-        custom_name: Custom base name for output files
-        formats: List of formats to generate ("srt", "vtt", "ass")
-        mobile_mode: Optimize for mobile screens
-    """
-    
-    if isinstance(data, (str, Path)):
-        with open(data, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-    
-    # Convert to Word objects
-    if isinstance(data, list):
-        words = data
-    else:
-        words = [
-            Word(
-                text=w['text'],
-                start=w['start'],
-                end=w['end'],
-                score=w.get('score'),
-                speaker_id=w.get('speaker_id')
-            )
-            for w in data.get('WordSegments', [])
-        ]
-    
-    # Build subtitle segments with mobile optimization
-    builder = ProfessionalSubtitleBuilder(mobile_mode=mobile_mode)
-    segments = builder.build_subtitles(words)
-    
-    # Write to files
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    name = custom_name if custom_name else "result"
-    suffix = "_mobile" if mobile_mode else ""
-
-    out = []
-    for fmt in formats:
-        out.append(write_subtitles(
-            segments, 
-            output_dir / f"{name}{suffix}_subtitles", 
-            format=fmt
-        ))
-    
-    # Print statistics
-    print(f"\n📊 Subtitle Statistics ({('Mobile' if mobile_mode else 'Desktop')} Mode):")
-    print(f"   Total segments: {len(segments)}")
-    if segments:
-        print(f"   Avg duration: {sum(s.duration for s in segments) / len(segments):.2f}s")
-        print(f"   Avg CPS: {sum(s.cps for s in segments) / len(segments):.2f}")
-        print(f"   Avg chars/subtitle: {sum(s.char_count for s in segments) / len(segments):.0f}")
-
-    return out
 
 
 @dataclass

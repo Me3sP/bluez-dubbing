@@ -39,12 +39,11 @@ async def dub(
     perform_vad_trimming: bool = Query(True, description="Whether to perform VAD-based silence trimming after TTS"),
     dubbing_strategy: str = Query("default", description="Dubbing strategy to use, either translation over (original audio ducked) or full replacement"),
     sophisticated_dub_timing: bool = Query(False, description="Whether to use sophisticated timing for full replacement dubbing strategy"),
-    subtitle: bool = Query(False, description="Whether to include subtitles"),
     mobile_optimized: bool = Query(True, description="Optimize for mobile viewing"),
     allow_short_translations: bool = Query(True, description="Allow short translations for alignment"),
     segments_aligner_model: str = Query("default", description="Model for translated segment alignment with the source segments"),
     allow_merging: bool = Query(False, description="Allow merging segments during alignment"),
-    subtitle_style: str = Query("default", description="Subtitle style preset: default, minimal, bold, netflix"),
+    subtitle_style: str | None = Query(None, description="Subtitle style preset: default, minimal, bold, netflix"),
 ):
     """
     Complete dubbing pipeline:
@@ -150,13 +149,15 @@ async def dub(
         
         # Separate vocals and background
         if audio_sep or dubbing_strategy == "full_replacement":
+            model_file_dir = BASE / "models_cache" / "audio-separator-models" / Path(sep_model).stem
             print("Performing audio source separation...", file=sys.stderr)
             separation(
                 input_file=str(raw_audio_path),
                 output_dir=str(preprocessing_out),
                 model_filename=sep_model,
                 output_format="WAV",
-                custom_output_names={"vocals": "vocals", "other": "background"}
+                custom_output_names={"vocals": "vocals", "other": "background"},
+                model_file_dir=str(model_file_dir)
             )
 
         # ========== STEP 2: ASR - Transcribe vocals ==========
@@ -211,7 +212,7 @@ async def dub(
         # ========== STEP 3: Generate Subtitles ==========
         srt_path_0, vtt_path_0 = None, None
 
-        if subtitle:
+        if subtitle_style is not None:
             subtitles_dir = workspace / "subtitles"
             subtitles_dir.mkdir(exist_ok=True)
 
@@ -273,13 +274,14 @@ async def dub(
         
 
         # ========== STEP 5: TTS - Synthesize dubbed audio ==========
-        tr_result.audio_url = str(raw_audio_path)  # Provide original audio for context
+        tr_result.audio_url = str(vocals_path)  # Provide original audio for context
         prompt_audio_dir = workspace / "prompts"
         updated = attach_segment_audio_clips(
             asr_dump=tr_result.model_dump(),
             output_dir=prompt_audio_dir,
             min_duration=9.0,
-            max_duration=40.0
+            max_duration=40.0,
+            one_per_speaker=True
         )
         tr_result = ASRResponse(**updated)
 
@@ -365,30 +367,32 @@ async def dub(
         
         
         # merge dubbed segments
-        final_audio_path = audio_processing_dir / "final_dubbed_audio.wav"
+        speech_track = audio_processing_dir / "dubbed_speech_track.wav"
+        concatenate_audio(
+                segments=tts_result.model_dump()["segments"],
+                output_file=speech_track,
+                target_duration=get_audio_duration(raw_audio_path)
+        )
 
+        final_audio_path = speech_track 
         if dubbing_strategy == "full_replacement":
+            final_audio_path = audio_processing_dir / "final_dubbed_audio.wav"
             print(f"Using full replacement dubbing strategy with {sophisticated_dub_timing} for the voice over time manipulation", file=sys.stderr)
             overlay_on_background(tts_result.model_dump()["segments"], background_path=background_path, output_path=final_audio_path, sophisticated=sophisticated_dub_timing)
 
         else:
             print("Using translation Over dubbing strategy", file=sys.stderr)
-            concatenate_audio(
-                segments=tts_result.model_dump()["segments"],
-                output_file=final_audio_path,
-                target_duration=get_audio_duration(raw_audio_path)
-            )
 
 
         # ============= STEP 7:WORD ALIGNMENT with ASR on final audio ============
         
         # Update tr_result audio_url to point to final dubbed audio
-        tr_result.audio_url = str(final_audio_path)
+        tr_result.audio_url = str(speech_track)
 
         tr_aligned_tts, srt_path_1, vtt_path_1 = None, None, None
 
-        if subtitle:
-            # aligned the translated segments with the final audio for better dubbing sync
+        if subtitle_style is not None:
+            # aligned the translated segments with the speech track for better dubbing sync
             import time
             
             alignment_start = time.time()
@@ -425,9 +429,9 @@ async def dub(
 
         # ========== STEP 8: Final pass - Replace video audio & burn subtitles ==========
 
-        style = STYLE_PRESETS.get(subtitle_style, STYLE_PRESETS["default"])
+        style = STYLE_PRESETS.get(subtitle_style, STYLE_PRESETS["default"]) if subtitle_style is not None else None
         dubbed_path = workspace / f"dubbed_video_{target_lang}.mp4"
-        final_output = workspace / f"dubbed_video_{target_lang}_with_{subtitle_style}_subs.mp4"
+        final_output = workspace / f"dubbed_video_{target_lang}_with_{subtitle_style}_subs.mp4" if subtitle_style is not None else None
 
 
         print("begining final pass...", file=sys.stderr)
@@ -438,17 +442,17 @@ async def dub(
             dubbed_path=dubbed_path,
             output_path=final_output,
             subtitle_path=vtt_path_1,
-            style=style,
+            sub_style=style,
             mobile_optimized=mobile_optimized,
-            dubbing_strategy=dubbing_strategy,
-            subtitle=subtitle
+            dubbing_strategy=dubbing_strategy
         )
 
         
         final_result = {
             "workspace_id": workspace_id,
             "final_video_path": str(final_output),
-            "audio_path": str(final_audio_path),
+            "final_audio_path": str(final_audio_path),
+            "speech_track": str(speech_track),
             "subtitles": {
             "original": {
                 "srt": str(srt_path_0) if srt_path_0 else "",
