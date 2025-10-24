@@ -20,6 +20,9 @@ WORKERS = {
 
 def get_worker(model_key: str, runner_index: int) -> tuple[Path, Path]:
     if model_key not in WORKERS:
-        raise KeyError(f"Unknown model_key={model_key}, choose one of {list(WORKERS)}")
+        print(f"Unknown model_key={model_key}, choose one of {list(WORKERS)}")
+        print("Defaulting to first available model.")
+        model_key = list(WORKERS)[0]  # default to first
+        
     w = WORKERS[model_key]
     return w.venv_python, w.runner[runner_index]

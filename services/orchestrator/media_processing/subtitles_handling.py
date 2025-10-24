@@ -27,7 +27,7 @@ class SegmentCopySubtitleBuilder:
     ):
         if mobile_mode:
             max_chars_per_line = 30
-            max_lines = 2  # keep 2 lines for readability on mobile
+            max_lines = 1  # keep 1 line for readability on mobile
         self.max_chars_per_line = max_chars_per_line
         self.max_lines = max_lines
         self.max_chars = max_chars_per_line * max_lines
@@ -276,7 +276,7 @@ class SubtitleStyle:
     
     # Mobile-specific overrides
     mobile_font_size: int = 18
-    mobile_margin_v: int = 40  # More space on mobile
+    mobile_margin_v: int = 20  # More space on mobile
     
     def to_ass_style(self, mobile: bool = False) -> str:
         """Convert to ASS subtitle format style string."""
@@ -438,7 +438,7 @@ def _hex_to_ass_colour(rgb_hex: str) -> str:
     r = int(h[0:2], 16); g = int(h[2:4], 16); b = int(h[4:6], 16)
     return f"&H00{b:02X}{g:02X}{r:02X}"
 
-def _style_to_force_style(style: "SubtitleStyle", mobile: bool = False) -> str:
+def _style_to_force_style(style: SubtitleStyle, mobile: bool = False) -> str:
     parts = []
     if getattr(style, "font_name", None):
         parts.append(f"Fontname={style.font_name}")
@@ -530,6 +530,8 @@ def burn_subtitles_to_video(
     return out
 
 # Apply custom styling
+# add _desktop or _mobile for weither display you want the defaul is on mobile
+# the first part style name will always be written in camel case, the only situation where we put underscore is to specify mobile optimization or desktop
 STYLE_PRESETS = {
     "default": SubtitleStyle(),
     "minimal": SubtitleStyle(
