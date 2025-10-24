@@ -78,8 +78,6 @@ def check_audio_structure(audio_file: str):
 
     return Audio(audio_file)
 
-
-# ...existing code...
 def trim_audio_with_vad(
     audio_path: str | Path,
     output_path: str | Path = "",
@@ -87,29 +85,16 @@ def trim_audio_with_vad(
     several_seg: bool = False
 ) -> Union[ Tuple[float, str], Tuple[List[float], List[str]] ]:
     """
-    Trim audio to the speech region:
-      - If several_seg=False: keep audio from just before the first speech to just after the last speech.
+    Trim audio only at the end (keep the beginning):
+      - If several_seg=False: keep audio from time 0 to just after the last speech.
       - If several_seg=True: export each speech segment as an individual file.
-
-    Args:
-        audio_path: Input audio file path
-        output_path: Output trimmed audio file path (or directory if several_seg=True)
-        sampling_rate: Target sampling rate for VAD model
-        max_silence_gap_ms: Deprecated/ignored (kept for backward compatibility)
-        several_seg: If True, save individual speech segments instead of one trimmed file
-
-    Returns:
-        If several_seg=False: (duration_seconds, output_path)
-        If several_seg=True: (list_of_durations, list_of_paths)
     """
     audio_path = Path(audio_path)
     output_path = Path(output_path)
 
-    # Auto-add .wav extension if missing and saving single file
     if not several_seg and not output_path.suffix:
         output_path = output_path.with_suffix('.wav')
 
-    # Load Silero VAD model
     model, utils = torch.hub.load(
         repo_or_dir='snakers4/silero-vad',
         model='silero_vad',
@@ -118,17 +103,14 @@ def trim_audio_with_vad(
     )
     (get_speech_timestamps, _, read_audio, *_) = utils
 
-    # Read audio for VAD (16 kHz mono expected by Silero)
     wav = read_audio(str(audio_path), sampling_rate=sampling_rate)
 
-    # Get speech timestamps in seconds
     speech_timestamps = get_speech_timestamps(
         wav,
         model,
         return_seconds=True
     )
 
-    # If no speech, copy original
     if not speech_timestamps:
         if audio_path != output_path and not several_seg:
             import shutil
@@ -136,11 +118,9 @@ def trim_audio_with_vad(
             return 0.0, str(output_path)
         return ([], []) if several_seg else (0.0, str(audio_path))
 
-    # Load original audio for precise trimming (preserve original SR)
     waveform, original_sr = torchaudio.load(str(audio_path))
 
     if several_seg:
-        # Export each speech segment with small padding
         output_dir = output_path.parent / output_path.stem if output_path.suffix else output_path
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -167,18 +147,14 @@ def trim_audio_with_vad(
 
         return durations, output_files
 
-    # Single trimmed file: keep from first start to last end, with small padding
-    first_start = float(speech_timestamps[0]['start'])
+    # Single trimmed file: keep from start (0) to last end, with small padding at the end only
     last_end = float(speech_timestamps[-1]['end'])
-
-    pre_pad = 0.10  # 100 ms before first speech
     post_pad = 0.10  # 100 ms after last speech
 
-    start_sample = max(0, int(round((first_start - pre_pad) * original_sr)))
+    start_sample = 0  # do not trim the beginning
     end_sample = min(waveform.shape[1], int(round((last_end + post_pad) * original_sr)))
 
     if end_sample <= start_sample:
-        # Fallback: copy original if indices collapse
         import shutil
         shutil.copy(audio_path, output_path)
         return 0.0, str(output_path)
@@ -192,94 +168,68 @@ def trim_audio_with_vad(
 def rubberband_to_duration(in_wav, target_ms, out_wav):
     """
     Adjust audio duration using Rubberband with high-quality settings.
-    
-    Args:
-        in_wav: Input audio file path
-        target_ms: Target duration in milliseconds
-        out_wav: Output audio file path
     """
-    # Read audio (always_2d=False for proper shape handling)
-
-
-    # Support both string and Path for in_wav
     in_wav_path = str(in_wav) if isinstance(in_wav, Path) else in_wav
-    y, sr = sf.read(in_wav_path, always_2d=False)
-    
-    # Calculate target samples and stretch rate
+    y, sr = sf.read(in_wav_path, always_2d=False, dtype="float32")
+
+    # Compute target and current samples (use frames along axis 0)
     target_samples = int(round(target_ms * sr / 1000))
-    
-    # Get current length (handle both mono and stereo)
-    current_samples = y.shape[0] if y.ndim == 1 else y.shape[1]
+    current_samples = y.shape[0]
     rate = current_samples / target_samples
-    
-    print(f"🎵 Rubberband time stretch:")
+
+    print("🎵 Rubberband time stretch:")
     print(f"   Current: {current_samples/sr:.3f}s ({current_samples} samples)")
-    print(f"   Target: {target_ms/1000:.3f}s ({target_samples} samples)")
-    print(f"   Rate: {rate:.3f}x")
-    
-    # Prepare audio for pyrubberband (expects channels-first for stereo)
-    if y.ndim == 1:
-        # Mono audio
-        y_input = y
-    else:
-        # Stereo: transpose to (channels, samples)
-        y_input = y.T
-    
-    # Apply time stretch with high-quality settings
+    print(f"   Target:  {target_ms/1000:.3f}s ({target_samples} samples)")
+    print(f"   Rate:    {rate:.3f}x")
+    print(f"   Shape in: {y.shape}, dtype: {y.dtype}")
+
+    # pyrubberband expects (samples,) or (samples, channels)
+    y_input = y
+
     y2 = prb.time_stretch(
-        y_input, 
-        sr, 
-        rate, 
+        y_input,
+        sr,
+        rate,
         rbargs={
-            "--formant": "",      # Preserve formants (empty string, not "on")
-            "--pitch-hq": ""      # High-quality pitch shifting
+            "--formant": "",
+            "--pitch-hq": ""
         }
     )
-    
-    # Convert back to (samples, channels) if stereo
-    if y.ndim == 1:
-        y2_output = y2
-    else:
-        y2_output = y2.T
-    
-    # Fix length exactly by padding or trimming
-    current_length = len(y2_output) if y2_output.ndim == 1 else y2_output.shape[0]
-    
+
+    y2_output = y2  # already (samples,) or (samples, channels)
+
+    # Pad or trim to exact length
+    current_length = y2_output.shape[0] if y2_output.ndim > 1 else len(y2_output)
     if current_length < target_samples:
-        # Pad with silence
-        pad_samples = target_samples - current_length
+        pad = target_samples - current_length
         if y2_output.ndim == 1:
-            pad = np.zeros(pad_samples, dtype=y2_output.dtype)
-            y2_output = np.concatenate([y2_output, pad])
+            y2_output = np.concatenate([y2_output, np.zeros(pad, dtype=y2_output.dtype)])
         else:
-            pad = np.zeros((pad_samples, y2_output.shape[1]), dtype=y2_output.dtype)
-            y2_output = np.vstack([y2_output, pad])
-        print(f"   Padded {pad_samples} samples")
-    # elif current_length > target_samples:
-    #     # Trim excess
-    #     if y2_output.ndim == 1:
-    #         y2_output = y2_output[:target_samples]
-    #     else:
-    #         y2_output = y2_output[:target_samples, :]
-    #     print(f"   Trimmed {current_length - target_samples} samples")
-    
-    # Write output
+            y2_output = np.vstack([y2_output, np.zeros((pad, y2_output.shape[1]), dtype=y2_output.dtype)])
+        print(f"   Padded {pad} samples")
+    elif current_length > target_samples:
+        if y2_output.ndim == 1:
+            y2_output = y2_output[:target_samples]
+        else:
+            y2_output = y2_output[:target_samples, :]
+        print(f"   Trimmed {current_length - target_samples} samples")
+
     sf.write(out_wav, y2_output, sr)
     print(f"   ✅ Saved: {out_wav}")
-    
     return out_wav
 
 def adjust_audio_speed(input_files: List[Dict], output_dir: Optional[Path] = None) -> List[Dict]:
     """
-    Adjust speed of multiple audio segments to match their target durations.
-    
-    Args:
-        input_files: List of dicts with 'audio_url', 'start', 'end', 'speaker_id'
-        output_dir: Output directory for processed files (default: ./outs)
-    
-    Returns:
-        list: List of dicts with 'path', 'start', 'end', 'speaker_id'
+        Adjust speed of multiple audio segments to match their target durations.
+        
+        Args:
+            input_files: List of dicts with 'audio_url', 'start', 'end', 'speaker_id'
+            output_dir: Output directory for processed files (default: ./outs)
+        
+        Returns:
+            list: List of dicts with 'path', 'start', 'end', 'speaker_id'
     """
+
     if output_dir is None:
         output_dir = Path("./outs")
     
@@ -333,8 +283,7 @@ def adjust_audio_speed(input_files: List[Dict], output_dir: Optional[Path] = Non
     
     return resized
 
-
-def concatenate_audio(segments, output_file, target_duration: Optional[float] = None):
+def concatenate_audio(segments, output_file, target_duration: Optional[float] = None, alpha: float = 0.4, min_dur: float = 0.3, translation_segments: Optional[List[Dict]] = None) -> Tuple[str, Optional[List[Dict]]]:
     """
     Concatenate audio segments with intelligent duration adjustment.
     
@@ -363,6 +312,10 @@ def concatenate_audio(segments, output_file, target_duration: Optional[float] = 
             if actual_duration > target_duration:
                 # Compress to fit target duration
                 rubberband_to_duration(audio_files[0], target_duration * 1000, output_file)
+                # Update translation segment timings
+                if translation_segments and len(translation_segments) >= 1:
+                    translation_segments[0]["start"] = 0.0
+                    translation_segments[0]["end"] = float(target_duration)
             else:
                 # Pad with silence to reach target duration
                 expected_duration = segments[0]["end"] - segments[0]["start"]
@@ -378,6 +331,10 @@ def concatenate_audio(segments, output_file, target_duration: Optional[float] = 
                 
                 # Use weighted silence concatenation
                 _concat_with_weighted_silence([audio_files[0]], output_file, [silence_before, silence_after])
+                # Update translation segment timings
+                if translation_segments and len(translation_segments) >= 1:
+                    translation_segments[0]["start"] = float(new_start)
+                    translation_segments[0]["end"] = float(new_end)
         else:
             # No target duration, just copy the file
             shutil.copy(audio_files[0], output_file)
@@ -472,8 +429,93 @@ def concatenate_audio(segments, output_file, target_duration: Optional[float] = 
             # Update remaining overrun amounts after adjustment
             current['remaining_overrun'] = max(0, current['remaining_overrun'] - current_adjustment)
             next_seg['remaining_overrun'] = max(0, next_seg['remaining_overrun'] - next_adjustment)
-            
-    
+
+    # ==========  POST-PROCESSING STRETCH FOR SHORT SEGMENTS ==========
+    print("\n🪄 Post-processing: stretching short segments when possible...")
+    import tempfile as _tmp
+    stretch_temp_dir = Path(_tmp.mkdtemp())
+
+    def _available_space(idx: int) -> tuple[float, float]:
+        left_boundary = 0.0 if idx == 0 else segment_info[idx - 1]['centered_end']
+        right_boundary = target_duration if idx == len(segment_info) - 1 else segment_info[idx + 1]['centered_start']
+        left_gap = max(0.0, segment_info[idx]['centered_start'] - left_boundary)
+        right_gap = max(0.0, right_boundary - segment_info[idx]['centered_end'])
+        return left_gap, right_gap
+
+    for i in range(len(segment_info)):
+        seg = segment_info[i]
+        actual = float(seg['actual_duration'])
+        expected = float(seg['expected_duration'])
+
+        # Determine desired duration per rules:
+        desired = actual
+        if actual < expected:
+            desired = max(desired, min(actual * (1.0 + alpha), expected))
+        if actual < min_dur:
+            desired = max(desired, min_dur)
+
+        if desired <= actual + 1e-9:
+            continue  # No stretch needed
+
+        delta = desired - actual
+        left_gap, right_gap = _available_space(i)
+        total_gap = left_gap + right_gap
+
+        if total_gap + 1e-9 < delta:
+            # Not enough room to expand without overlap
+            print(f"   Segment {i}: cannot stretch to {desired:.3f}s (need {delta:.3f}s, have {total_gap:.3f}s)")
+            continue
+
+        # Allocate expansion, favor preserving center (split ~half), then fill remaining from the larger gap
+        expand_left = min(delta / 2.0, left_gap)
+        expand_right = min(delta - expand_left, right_gap)
+        if expand_left + expand_right < delta - 1e-9:
+            # Try to pull more from the side that still has room
+            need = delta - (expand_left + expand_right)
+            if right_gap - expand_right > left_gap - expand_left:
+                add = min(need, right_gap - expand_right)
+                expand_right += add
+                need -= add
+            if need > 0:
+                add = min(need, left_gap - expand_left)
+                expand_left += add
+
+        # Final check
+        if expand_left + expand_right + 1e-9 < delta:
+            print(f"   Segment {i}: insufficient gap after allocation, skipping stretch.")
+            continue
+
+        # Time-stretch audio file
+        src_path = Path(seg['audio_url'])
+        dst_path = stretch_temp_dir / f"stretched_{i:03d}.wav"
+        try:
+            rubberband_to_duration(str(src_path), desired * 1000.0, str(dst_path))
+        except Exception as e:
+            print(f"   Segment {i}: stretch failed ({e}), skipping.")
+            continue
+
+        # Update segment info: duration, file, and centered bounds
+        seg['audio_url'] = str(dst_path)
+        seg['actual_duration'] = desired
+        seg['centered_start'] -= expand_left
+        seg['centered_end'] += expand_right
+
+        print(f"   Segment {i}: stretched to {desired:.3f}s, adjusted to [{seg['centered_start']:.3f}-{seg['centered_end']:.3f}]")
+
+    # ========== WRITE BACK FINAL BOUNDARIES TO TRANSLATION SEGMENTS ==========
+    if translation_segments:
+        n = min(len(translation_segments), len(segment_info))
+        for k in range(n):
+            si = segment_info[k]
+            # Clamp into [0, target_duration] if target known
+            start = float(si['centered_start'])
+            end = float(si['centered_end'])
+            if target_duration is not None:
+                start = max(0.0, min(start, float(target_duration)))
+                end = max(0.0, min(end, float(target_duration)))
+            translation_segments[k]["start"] = start
+            translation_segments[k]["end"] = end
+
     # ========== BUILD TIMELINE WITH SILENCE ==========
     print("\n🔇 Building timeline with silence padding...")
     
@@ -520,7 +562,7 @@ def concatenate_audio(segments, output_file, target_duration: Optional[float] = 
     print(f"\n🎵 Concatenating {len(timeline)} elements...")
     
     import tempfile
-    temp_dir = Path(tempfile.mkdtemp())
+    silence_temp_dir = Path(tempfile.mkdtemp())
     
     try:
         # Get audio properties from first audio segment
@@ -538,14 +580,14 @@ def concatenate_audio(segments, output_file, target_duration: Optional[float] = 
         channels = audio_info['streams'][0]['channels']
         
         # Create silence files and build file list
-        filelist_path = temp_dir / "filelist.txt"
+        filelist_path = silence_temp_dir / "filelist.txt"
         silence_counter = 0
         
         with open(filelist_path, 'w') as f:
             for element in timeline:
                 if element['type'] == 'silence':
                     if element['duration'] > 0.001:  # Only create if > 1ms
-                        silence_file = temp_dir / f"silence_{silence_counter}.wav"
+                        silence_file = silence_temp_dir / f"silence_{silence_counter}.wav"
                         silence_cmd = [
                             'ffmpeg', '-y',
                             '-f', 'lavfi',
@@ -583,13 +625,15 @@ def concatenate_audio(segments, output_file, target_duration: Optional[float] = 
             result = str(output_file)
     
     finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        # Clean up temp dirs
+        shutil.rmtree(silence_temp_dir, ignore_errors=True)
+        shutil.rmtree(stretch_temp_dir, ignore_errors=True)
     
     print("\n" + "="*60)
     print("✅ CENTERING AND PADDING COMPLETE")
     print("="*60)
-    
-    return result
+
+    return result, translation_segments
 
 
 def _simple_concat(audio_files, output_file):
@@ -808,14 +852,14 @@ def overlay_on_background_default(
         mix /= peak * 1.01
 
     sf.write(str(output_path), mix, sr)
-    return str(output_path)
+    return str(output_path) # No translation segments updated in this simple overlay
 
 def overlay_on_background_sophisticated(
     dubbed_segments: List[Dict] | None,
     background_path: Path | str,
     output_path: Path | str,
     ducking_db: float = 0.0,
-    speech_track: Path | str | None = None,
+    speech_track: Path | str | None = None
 ) -> str:
     """
     Create a single speech track using the concatenate_audio logic (if segments given),
@@ -837,9 +881,6 @@ def overlay_on_background_sophisticated(
     if not background_path.exists():
         raise FileNotFoundError(f"Background track not found: {background_path}")
 
-    # Determine target duration from background
-    target_duration = get_audio_duration(str(background_path))
-
     # Resolve speech path: use provided file or build a temp one from segments
     if speech_track is not None:
         speech_path = Path(speech_track)
@@ -849,19 +890,8 @@ def overlay_on_background_sophisticated(
         bg_wave, bg_sr = sf.read(str(background_path), always_2d=True)
         sp_wave, sp_sr = sf.read(str(speech_path), always_2d=True)
     else:
-        if not dubbed_segments:
-            raise ValueError("Either speech_track must be provided or dubbed_segments must be non-empty.")
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir = Path(tmpdir)
-            speech_path = tmpdir / "speech_concat.wav"
-            concatenate_audio(dubbed_segments, str(speech_path), target_duration=target_duration)
-
-            # Load background and speech
-            bg_wave, bg_sr = sf.read(str(background_path), always_2d=True)
-            sp_wave, sp_sr = sf.read(str(speech_path), always_2d=True)
-
-            # The rest of the processing below will run after this block ends,
-            # but we keep arrays in memory; the temp file can be cleaned up safely.
+        raise ValueError(" Speech_track must be provided.")
+        
 
     # Resample speech to background SR if needed
     if sp_sr != bg_sr:

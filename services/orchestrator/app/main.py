@@ -365,20 +365,32 @@ async def dub(
         audio_processing_dir = workspace / "audio_processing"
         audio_processing_dir.mkdir(exist_ok=True)
         
-        
+        print("=" * 20 + "old segments" + "=" * 20, file=sys.stderr)
+        for seg in tts_result.model_dump()["segments"]:
+            print(seg, file=sys.stderr)
+        print("=" * 50, file=sys.stderr)
+
         # merge dubbed segments
         speech_track = audio_processing_dir / "dubbed_speech_track.wav"
-        concatenate_audio(
+        _, translation_segments = concatenate_audio(
                 segments=tts_result.model_dump()["segments"],
                 output_file=speech_track,
-                target_duration=get_audio_duration(raw_audio_path)
+                target_duration=get_audio_duration(raw_audio_path),
+                alpha=0.25,
+                min_dur=0.4,
+                translation_segments=tr_result.model_dump()["segments"] 
         )
+
+        print("=" * 20 + "new segments" + "=" * 20, file=sys.stderr)
+        for seg in translation_segments:
+            print(seg, file=sys.stderr)
+        print("=" * 50, file=sys.stderr)
 
         final_audio_path = speech_track 
         if dubbing_strategy == "full_replacement":
             final_audio_path = audio_processing_dir / "final_dubbed_audio.wav"
             print(f"Using full replacement dubbing strategy with {sophisticated_dub_timing} for the voice over time manipulation", file=sys.stderr)
-            overlay_on_background(tts_result.model_dump()["segments"], background_path=background_path, output_path=final_audio_path, sophisticated=sophisticated_dub_timing)
+            overlay_on_background( tts_result.model_dump()["segments"], background_path=background_path, output_path=final_audio_path, ducking_db=0.0, sophisticated=sophisticated_dub_timing, speech_track=speech_track)
 
         else:
             print("Using translation Over dubbing strategy", file=sys.stderr)
@@ -388,6 +400,8 @@ async def dub(
         
         # Update tr_result audio_url to point to final dubbed audio
         tr_result.audio_url = str(speech_track)
+        tr_dict = tr_result.model_dump()
+        tr_dict["segments"] = translation_segments if translation_segments is not None else tr_dict["segments"]
 
         tr_aligned_tts, srt_path_1, vtt_path_1 = None, None, None
 
@@ -402,7 +416,7 @@ async def dub(
                 r = await client.post(
                     ASR_URL,
                     params={"model_key": asr_model, "runner_index": 1},
-                    json=tr_result.model_dump()
+                    json=tr_dict
                 )
                 if r.status_code != 200:
                     raise HTTPException(500, f"Second Alignment failed: {r.text}")
