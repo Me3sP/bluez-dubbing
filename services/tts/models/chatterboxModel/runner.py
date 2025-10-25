@@ -36,7 +36,8 @@ if __name__ == "__main__":
             wav = multilingual_model.generate(
                 segment.text, 
                 language_id=segment.lang, 
-                audio_prompt_path=audio_prompt
+                audio_prompt_path=audio_prompt,
+                **req.extra.get("generate", {})
             )
             
             # Save audio file

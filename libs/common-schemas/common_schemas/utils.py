@@ -183,20 +183,6 @@ TERMINATORS = {
     ]
 }
 
-# Language mapping the two letters ISO code of a language to is equivalent in the ASR, Translation, and TTS models used
-LANGUAGE_MATCHING = { "zh": [ {"whisperx": "zh"}, {"facebook_m2m100": "zh-CN"}, {"chatterbox": "zh", "voice": "zh-CN-XiaoxiaoNeural"} ], # [{ASR model: lang_code}, {Translation model: lang_code}, {TTS model: lang_code, voice: voice_name}]
-                     "en": [ {"whisperx": "en"}, {"facebook_m2m100": "en", "deep_translator": "en"}, {"chatterbox": "en", "edge_tts": "en"} ],
-                     "fr": [ {"whisperx": "fr"}, {"facebook_m2m100": "fr", "deep_translator": "fr"}, {"chatterbox": "fr", "edge_tts": "fr"} ],
-                     "de": [ {"whisperx": "de"}, {"facebook_m2m100": "de", "deep_translator": "de"}, {"chatterbox": "de", "edge_tts": "de"} ],
-                     "es": [ {"whisperx": "es"}, {"facebook_m2m100": "es", "deep_translator": "es"}, {"chatterbox": "es", "edge_tts": "es"} ],
-                     "it": [ {"whisperx": "it"}, {"facebook_m2m100": "it", "deep_translator": "it"}, {"chatterbox": "it", "edge_tts": "it"} ],
-                     "ja": [ {"whisperx": "ja"}, {"facebook_m2m100": "ja", "deep_translator": "ja"}, {"chatterbox": "ja", "edge_tts": "ja"} ],
-                     "ko": [ {"whisperx": "ko"}, {"facebook_m2m100": "ko", "deep_translator": "ko"}, {"chatterbox": "ko", "edge_tts": "ko"} ],
-                     "pt": [ {"whisperx": "pt"}, {"facebook_m2m100": "pt", "deep_translator": "pt"}, {"chatterbox": "pt", "edge_tts": "pt"} ],
-                     "ru": [ {"whisperx": "ru"}, {"facebook_m2m100": "ru", "deep_translator": "ru"}, {"chatterbox": "ru", "edge_tts": "ru"} ],
-                     "tr": [ {"whisperx": "tr"}, {"facebook_m2m100": "tr", "deep_translator": "tr"}, {"chatterbox": "tr", "edge_tts": "tr"} ]
-}
-
 TRANSLATION_STRATEGIES = ["default", "short", "long_proportional", "long_sophisticated", "long_sophisticated_merging"]
 DUBBING_STRATEGIES = ["default", "translation_over", "full_replacement"] # if not specified or wrong entry, use "default" that is same as "translation_over": overlay the dubbed audio on original audio(different from "full_replacement" that is replace original audio with dubbed audio)
 

@@ -1,0 +1,100 @@
+# ========================================================== YAML edge TTS configuration file ==================================
+
+languages:
+  - af
+  - am
+  - ar
+  - as
+  - az
+  - bg
+  - bn
+  - bs
+  - ca
+  - cs
+  - cy
+  - da
+  - de
+  - el
+  - en
+  - es
+  - et
+  - eu
+  - fa
+  - fi
+  - fil
+  - fr
+  - ga
+  - gl
+  - gu
+  - he
+  - hi
+  - hr
+  - hu
+  - hy
+  - id
+  - is
+  - it
+  - ja
+  - jv
+  - ka
+  - kk
+  - km
+  - kn
+  - ko
+  - lo
+  - lt
+  - lv
+  - mk
+  - ml
+  - mn
+  - mr
+  - ms
+  - mt
+  - my
+  - nb
+  - ne
+  - nl
+  - or
+  - pa
+  - pl
+  - ps
+  - pt
+  - ro
+  - ru
+  - si
+  - sk
+  - sl
+  - so
+  - sq
+  - sr
+  - su
+  - sv
+  - sw
+  - ta
+  - te
+  - th
+  - tr
+  - uk
+  - ur
+  - uz
+  - vi
+  - wuu
+  - yue
+  - zh
+
+
+# Communicate class hyperparameters
+params:
+  general:
+    out_format: "wav"
+    default_voice: "en-US-AriaNeural"
+    gender: "Male" # try to see if we can automatically detect the gender of the speaker in the main code
+  communicate:
+    rate: "+0%"
+    volume: "+0%"
+    pitch: "+0Hz"
+    boundary: "SentenceBoundary"
+    connector: null
+    proxy: null
+    connect_timeout: 10
+    receive_timeout: 60

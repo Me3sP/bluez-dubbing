@@ -13,12 +13,13 @@ if __name__ == "__main__":
     
 
     with contextlib.redirect_stdout(sys.stderr):
+        model_name = req.extra.get("model_name", "facebook/m2m100_418M")
 
         # Check if GPU is available
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        model = M2M100ForConditionalGeneration.from_pretrained("facebook/m2m100_418M")
-        tokenizer = M2M100Tokenizer.from_pretrained("facebook/m2m100_418M")
+        model = M2M100ForConditionalGeneration.from_pretrained(model_name)
+        tokenizer = M2M100Tokenizer.from_pretrained(model_name)
 
         # Move model to GPU
         model = model.to(device)
@@ -34,20 +35,10 @@ if __name__ == "__main__":
             
             generated_tokens = model.generate(**encoded_en, forced_bos_token_id=tokenizer.get_lang_id(req.target_lang))
 
-            translated_text = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)[0]
+            translated_text = tokenizer.batch_decode(generated_tokens, skip_special_tokens=req.extra.get("skip_special_tokens", True))[0]
 
             out.segments.append(Segment(start=segment.start, end=segment.end, text=translated_text, speaker_id=segment.speaker_id, lang=req.target_lang))
             out.language = req.target_lang
-
-            # workspace_id = str(uuid.uuid4())
-            # BASE = Path(__file__).resolve().parents[4]
-            # output_base = BASE / "outs" / "translation_outputs" / workspace_id  # matches your repo structure
-            # output_base.mkdir(parents=True, exist_ok=True)
-
-            # # Save result to file
-            # output_file = output_base / "translated_segments_result.json"
-            # with open(output_file, 'w') as f:
-            #     f.write(out.model_dump_json())
 
 
     sys.stdout.write(out.model_dump_json() + "\n")

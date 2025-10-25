@@ -4,12 +4,19 @@ from pathlib import Path
 from typing import Type, TypeVar
 from pydantic import BaseModel
 from .registry import get_worker  # maps model_key -> (venv_python, runner_path)
+import yaml
 
 T = TypeVar("T", bound=BaseModel)
+BASE = Path(__file__).resolve().parents[1]  # service root
+CONFIG_DIR = BASE.parent.parent / "libs/common-schemas/config"  # ../../libs/common-schemas/config
 
 def call_worker(model_key: str, payload: BaseModel, out_model: type[T]) -> T:
 
-    vpy, runner = get_worker(model_key)
+    vpy, runner, selected_key = get_worker(model_key, payload.language)
+    cfg = CONFIG_DIR / f"{selected_key}.yaml"
+    data = yaml.safe_load(cfg.read_text()) or {}
+    payload.extra = data.get("params", {})
+
     cwd = runner.parent
     proc = subprocess.run(
         [str(vpy), str(runner)],

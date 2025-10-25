@@ -10,8 +10,6 @@ from edge_tts import VoicesManager
 
 from common_schemas.models import TTSRequest, TTSResponse, SegmentAudioOut
 
-OUTPUT_FORMAT = os.getenv("TTS_OUTPUT_FORMAT", "wav").lower()  # "mp3" or "wav"
-DEFAULT_VOICE = os.getenv("TTS_DEFAULT_VOICE", "en-US-GuyNeural")  # global fallback
 
 def convert_mp3_to_wav(src_mp3: Path, dst_wav: Path, sample_rate: int = 24000, channels: int = 1) -> None:
     # Requires ffmpeg in PATH
@@ -23,7 +21,7 @@ def convert_mp3_to_wav(src_mp3: Path, dst_wav: Path, sample_rate: int = 24000, c
         stderr=subprocess.DEVNULL,
     )
 
-def pick_voice_name(voices: VoicesManager, lang: str, gender: str | None, seed_key: str) -> str:
+def pick_voice_name(voices: VoicesManager, lang: str, gender: str | None, seed_key: str, default_voice: str) -> str:
     # stable selection per seed_key
     rng = random.Random(seed_key)
 
@@ -50,11 +48,11 @@ def pick_voice_name(voices: VoicesManager, lang: str, gender: str | None, seed_k
             return name
 
     # Fallback to any gender in English
-    cands = voices.find(Name=DEFAULT_VOICE) or voices.find(Language="en")
-    name = choose(cands) or DEFAULT_VOICE
+    cands = voices.find(Name=default_voice) or voices.find(Language="en")
+    name = choose(cands) or default_voice
     return name
 
-async def synthesize_all(req: TTSRequest) -> TTSResponse:
+async def synthesize_all(req: TTSRequest, out_format: str, default_voice: str, gender: str | None, **kwargs) -> TTSResponse:
     out = TTSResponse()
     workspace_path = Path(req.workspace)
     voices = await VoicesManager.create()
@@ -73,23 +71,21 @@ async def synthesize_all(req: TTSRequest) -> TTSResponse:
         key = (segment.speaker_id, segment.lang)
         voice_name = speaker_voice_map.get(key)
         if not voice_name:
-            # Prefer Male if you want, else set gender=None for any
-            preferred_gender = "Male"
-            voice_name = pick_voice_name(voices, segment.lang, preferred_gender, seed_key=f"{segment.speaker_id}-{segment.lang}")
+            # Default gender (Male or Female), set gender=None for any
+            voice_name = pick_voice_name(voices, segment.lang, gender, seed_key=f"{segment.speaker_id}-{segment.lang}", default_voice=default_voice)
             speaker_voice_map[key] = voice_name
 
         # Synthesize to MP3
-        communicate = edge_tts.Communicate(segment.text, voice_name)
+        communicate = edge_tts.Communicate(segment.text, voice_name, **kwargs)
         await communicate.save(str(mp3_path))
 
         # Post-process format
-        if OUTPUT_FORMAT == "wav":
+        if out_format == "wav":
             convert_mp3_to_wav(mp3_path, wav_path)
             audio_url = str(wav_path)
-            # optional: remove mp3
-            if os.getenv("TTS_KEEP_MP3", "false").lower() != "true":
-                with contextlib.suppress(Exception):
-                    mp3_path.unlink()
+            # remove mp3
+            with contextlib.suppress(Exception):
+                mp3_path.unlink()
         else:
             audio_url = str(mp3_path)
 
@@ -104,9 +100,14 @@ async def synthesize_all(req: TTSRequest) -> TTSResponse:
 
 if __name__ == "__main__":
     req = TTSRequest(**json.loads(sys.stdin.read()))
+    extra = req.extra.get("params", {})
+    out_format = extra.get("general", {}).get("out_format", "wav")
+    default_voice = extra.get("general", {}).get("default_voice", "en-US-AriaNeural")
+    gender = extra.get("general", {}).get("gender", None)
+
     with contextlib.redirect_stdout(sys.stderr):
         try:
-            result = asyncio.run(synthesize_all(req))
+            result = asyncio.run(synthesize_all(req, out_format=out_format, default_voice=default_voice, gender=gender, **extra.get("communicate", {})))
         except Exception as e:
             # Surface a clean error to orchestrator
             sys.stderr.write(f"[edge-tts] Error: {e}\n")

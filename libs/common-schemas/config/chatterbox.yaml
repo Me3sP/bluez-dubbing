@@ -1,0 +1,36 @@
+# ========================================================== YAML chatterbox configuration file ==================================
+languages:
+  - ar
+  - da
+  - de
+  - el
+  - en
+  - es
+  - fi
+  - fr
+  - he
+  - hi
+  - it
+  - ja
+  - ko
+  - ms
+  - nl
+  - no
+  - pl
+  - pt
+  - ru
+  - sv
+  - sw
+  - tr
+  - zh
+
+
+# Generation hyperparameters
+params:
+  generate:
+    exaggeration: 0.5
+    cfg_weight: 0.5
+    temperature: 0.8
+    repetition_penalty: 2.0
+    min_p: 0.05
+    top_p: 1.0

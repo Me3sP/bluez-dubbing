@@ -1,0 +1,3 @@
+# main config parameters
+batch_size: 16 # reduce if low on GPU mem
+compute_type: float16

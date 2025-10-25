@@ -1,4 +1,5 @@
 import json, sys, os
+import yaml
 from typing import Tuple, List, Optional
 import uuid
 import httpx
@@ -11,7 +12,7 @@ from media_processing.audio_processing import concatenate_audio, get_audio_durat
 from media_processing.final_pass import final
 import shutil
 import subprocess
-from common_schemas.utils import map_by_text_overlap, alignerWrapper, LANGUAGE_MATCHING, attach_segment_audio_clips
+from common_schemas.utils import map_by_text_overlap, alignerWrapper, attach_segment_audio_clips
 
 app = FastAPI(title="orchestrator")
 
@@ -171,7 +172,7 @@ async def dub(
         async with httpx.AsyncClient(timeout=1200) as client:
             asr_req = ASRRequest(
                 audio_url=str(raw_audio_path),
-                language_hint=LANGUAGE_MATCHING[source_lang][0][asr_model] if source_lang else None,
+                language_hint= source_lang if source_lang else None,
                 allow_short= translation_strategy.split("_")[0] != "long"
             )
 
@@ -240,8 +241,8 @@ async def dub(
 
             tr_req = TranslateRequest(
                 segments= raw_asr_result.segments if translation_strategy.split("_")[0] == "long" else aligned_asr_result.segments ,
-                source_lang=LANGUAGE_MATCHING[source_lang][1][tr_model] if source_lang else None,
-                target_lang=LANGUAGE_MATCHING[target_lang][1][tr_model] if target_lang else None
+                source_lang=source_lang if source_lang else None,
+                target_lang=target_lang if target_lang else None
             )
             
             r = await client.post(
@@ -303,14 +304,14 @@ async def dub(
                     end=tr_seg.end,
                     text=tr_seg.text,
                     speaker_id=tr_seg.speaker_id,
-                    lang=tr_result.language or LANGUAGE_MATCHING[target_lang][2][tts_model],
+                    lang=tr_result.language or target_lang,
                     audio_prompt_url=tr_seg.audio_url if tr_seg.speaker_id else None
                 )
                 for tr_seg in tr_result.segments
             ]
-            
-            tts_req = TTSRequest(segments=tts_segments , workspace=str(workspace))
-            
+
+            tts_req = TTSRequest(segments=tts_segments , workspace=str(workspace), language=target_lang)
+
             r = await client.post(
                 TTS_URL,
                 params={"model_key": tts_model},

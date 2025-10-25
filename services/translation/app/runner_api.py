@@ -5,12 +5,19 @@ from typing import Type, TypeVar
 from pydantic import BaseModel
 from .registry import get_worker  # maps model_key -> (venv_python, runner_path)
 from shutil import which
+import yaml
 
 T = TypeVar("T", bound=BaseModel)
+BASE = Path(__file__).resolve().parents[1]  # service root
+CONFIG_DIR = BASE.parent.parent / "libs/common-schemas/config"  # ../../libs/common-schemas/config
 
 def call_worker(model_key: str, payload: BaseModel, out_model: type[T]) -> T:
 
-    vpy, runner = get_worker(model_key)
+    vpy, runner, selected_key = get_worker(model_key, payload.source_lang, payload.target_lang)
+    cfg = CONFIG_DIR / f"{selected_key}.yaml"
+    data = yaml.safe_load(cfg.read_text()) or {}
+    payload.extra = data.get("params", {})
+
     uv = which("uv")
     cmd = [uv, "run", runner.name] if uv else [str(vpy), str(runner)]
     cwd = runner.parent

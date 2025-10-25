@@ -6,6 +6,8 @@ class ASRRequest(BaseModel):
     audio_url: str
     language_hint: str | None = None
     allow_short: bool = False # diarize after alignment when True
+    # Free-form bucket for future-proofing
+    extra: Dict[str, Any] = Field(default_factory=dict)
 
 class Word(BaseModel):
     start: float
@@ -29,6 +31,9 @@ class ASRResponse(BaseModel):
     WordSegments: List[Word] | None = None
     language: str | None = None
     audio_url: str | None = None  # Optional field for audio link to that transcription
+    # Free-form bucket for future-proofing
+    extra: Dict[str, Any] = Field(default_factory=dict)
+
 
 class ASRResultWrapper(BaseModel):
     raw: ASRResponse | None = None
@@ -39,6 +44,8 @@ class TranslateRequest(BaseModel):
     segments: List[Segment] | None = Field(default_factory=list)
     source_lang: str | None = None
     target_lang: str
+    # Free-form bucket for future-proofing
+    extra: Dict[str, Any] = Field(default_factory=dict)
 
 
 # TTS
@@ -60,6 +67,10 @@ class SegmentAudioOut(BaseModel):
 class TTSRequest(BaseModel):
     segments: List[SegmentAudioIn] = Field(default_factory=list)
     workspace: str | None = None
+    language: str | None = None
+    # Free-form bucket for future-proofing
+    extra: Dict[str, Any] = Field(default_factory=dict)
+    
 
 class TTSResponse(BaseModel):
     segments: List[SegmentAudioOut] = Field(default_factory=list)

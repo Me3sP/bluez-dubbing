@@ -8,28 +8,29 @@ import torch
 
 if __name__ == "__main__":
     req = ASRResponse(**json.loads(sys.stdin.read()))
-    req = req.model_dump()
+    req =req.model_dump() # we need that because the aligner is waiting for a subscriptable object like dict
 
     with contextlib.redirect_stdout(sys.stderr):
         device = "cuda"
-        batch_size = 16
-        compute_type = "float16"
+        extra = req["extra"] or {}
+        batch_size = extra.get("batch_size", 16) # reduce if low on GPU mem
+        compute_type = extra.get("compute_type", "float16") # change to "int8" if low on GPU mem (may reduce accuracy)
         model_dir = "./model_cache/asr/"
         
         # Clear GPU cache before loading
         gc.collect()
         torch.cuda.empty_cache()
-        
+
         audio = whisperx.load_audio(req["audio_url"])
 
         # Use cached model
         model_a, metadata = whisperx.load_align_model(
-            language_code=req["language"], 
+            language_code=req["language"],
                 device=device
         )
         
         result = whisperx.align(
-            req["segments"], 
+            req["segments"],
             model_a, 
             metadata, 
             audio, 

@@ -16,16 +16,18 @@ if __name__ == "__main__":
         req = ASRRequest(**json.loads(sys.stdin.read()))
 
         with contextlib.redirect_stdout(sys.stderr):
+            extra = req.extra or {}
+            whisper_model = extra.get("model_name", "large")
+            batch_size = extra.get("batch_size", 16) # reduce if low on GPU mem
+            compute_type = extra.get("compute_type", "float16") # change to "int8" if low on GPU mem (may reduce accuracy)
 
             load_dotenv()
             YOUR_HF_TOKEN = os.getenv("HF_TOKEN")
 
-            device = "cuda" # if torch.cuda.is_available() else "cpu"
-            batch_size = 16 # reduce if low on GPU mem
-            compute_type = "float16" # change to "int8" if low on GPU mem (may reduce accuracy)
+            device = "cuda" #if torch.cuda.is_available() else "cpu"
             model_dir = "./model_cache/asr/" # save model to local path (optional)
 
-            model = whisperx.load_model("large", device, compute_type=compute_type, download_root=model_dir)
+            model = whisperx.load_model(whisper_model, device, compute_type=compute_type, download_root=model_dir)
             audio = whisperx.load_audio(req.audio_url)
 
             # 1. Transcribe with original whisper (batched)
