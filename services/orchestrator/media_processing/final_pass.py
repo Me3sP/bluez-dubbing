@@ -99,12 +99,13 @@ def final(
     """
     Replace video's audio stream with dubbed audio or add voice-over, then burn subtitles.
     """
-    apply_audio_to_video(
-        video_path=video_path,
-        audio_path=audio_path,
-        output_path=dubbed_path,
-        dubbing_strategy=dubbing_strategy
-    )
+    if dubbed_path != video_path:
+        apply_audio_to_video(
+            video_path=video_path,
+            audio_path=audio_path,
+            output_path=dubbed_path,
+            dubbing_strategy=dubbing_strategy
+        )
 
     if sub_style is not None and subtitle_path is not None:
         burn_subtitles_to_video(
