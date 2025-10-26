@@ -1,6 +1,7 @@
 import subprocess
 from pathlib import Path
 from typing import List, Dict, Optional, Union, Tuple
+import threading
 import librosa
 import soundfile as sf
 import numpy as np
@@ -14,17 +15,33 @@ import torch
 import torchaudio
 import tempfile
 
+_silero_vad_lock = threading.Lock()
+_silero_vad_bundle: Optional[Tuple[torch.nn.Module, Tuple]] = None
+
+
+def _load_silero_vad():
+    global _silero_vad_bundle
+    if _silero_vad_bundle is None:
+        with _silero_vad_lock:
+            if _silero_vad_bundle is None:
+                model, utils = torch.hub.load(
+                    repo_or_dir='snakers4/silero-vad',
+                    model='silero_vad',
+                    force_reload=False,
+                    onnx=False
+                )
+                _silero_vad_bundle = (model, utils)
+    return _silero_vad_bundle
+
+
+_duration_cache_lock = threading.Lock()
+_duration_cache: Dict[str, float] = {}
+
 
 def check_audio_structure(audio_file: str):
 
-    # Load Silero VAD model
-    model, utils = torch.hub.load(
-        repo_or_dir='snakers4/silero-vad',
-        model='silero_vad',
-        force_reload=False,
-        onnx=False
-    )
-    
+    model, utils = _load_silero_vad()
+
     (get_speech_timestamps, _, read_audio, *_) = utils
     
     # Read audio file
@@ -95,12 +112,7 @@ def trim_audio_with_vad(
     if not several_seg and not output_path.suffix:
         output_path = output_path.with_suffix('.wav')
 
-    model, utils = torch.hub.load(
-        repo_or_dir='snakers4/silero-vad',
-        model='silero_vad',
-        force_reload=False,
-        onnx=False
-    )
+    model, utils = _load_silero_vad()
     (get_speech_timestamps, _, read_audio, *_) = utils
 
     wav = read_audio(str(audio_path), sampling_rate=sampling_rate)
@@ -980,10 +992,38 @@ def overlay_on_background(dubbed_segments: List[Dict],
         )
 
 def get_audio_duration(path: Path | str) -> float:
-    """Get audio duration in seconds with high precision."""
-    out = subprocess.check_output(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
-        text=True
-    ).strip()
-    return float(out)
+    """Get audio duration in seconds with high precision, cached."""
+    resolved = str(Path(path))
+    with _duration_cache_lock:
+        cached = _duration_cache.get(resolved)
+    if cached is not None:
+        return cached
+
+    duration: Optional[float] = None
+    try:
+        info = sf.info(resolved)
+        if info.frames and info.samplerate:
+            duration = info.frames / float(info.samplerate)
+    except Exception:
+        duration = None
+
+    if duration is None:
+        try:
+            ta_info = torchaudio.info(resolved)
+            if ta_info.num_frames and ta_info.sample_rate:
+                duration = ta_info.num_frames / float(ta_info.sample_rate)
+        except Exception:
+            duration = None
+
+    if duration is None:
+        out = subprocess.check_output(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", resolved],
+            text=True
+        ).strip()
+        duration = float(out)
+
+    with _duration_cache_lock:
+        _duration_cache[resolved] = duration
+
+    return duration

@@ -4,10 +4,6 @@ import os
 import subprocess
 from typing import Dict, Any, List, Optional
 
-# output_base = Path(__file__).resolve().parents[4]
-# OUT = output_base / "outs" / "preprocessing_outputs"
-
-
 
 def convert_video_to_audio(video_file: str, audio_dir: str):
     os.makedirs(audio_dir, exist_ok=True)
@@ -128,9 +124,3 @@ def get_non_vocals_stem(model_filename: str, vocals_label: str = "vocals") -> Op
             return None  # Found model but no non-vocals stem
 
     return None  # Model filename not found
-
-# Example:
-# grouped_all = separator.list_supported_model_files()
-# get_non_vocals_stem(grouped_all, "1_HP-UVR.pth")
-# get_non_vocals_stem(two_stem_vocals_by_arch, "1_HP-UVR.pth")
-# ...existing code...
