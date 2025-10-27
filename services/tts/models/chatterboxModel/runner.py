@@ -58,7 +58,7 @@ def _synthesize(req: TTSRequest) -> TTSResponse:
             **generation_kwargs,
         )
 
-        output_file = workspace_path / "tts" / f"seg-{i}.wav"
+        output_file = workspace_path / f"seg-{i}.wav"
         output_file.parent.mkdir(parents=True, exist_ok=True)
         ta.save(str(output_file), wav, sample_rate)
 

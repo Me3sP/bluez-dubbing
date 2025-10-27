@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Bluez Dubbing Studio</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        :root {
+            color-scheme: light dark;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+        body {
+            margin: 0;
+            padding: 0;
+            background: #0f172a;
+            color: #f8fafc;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+        }
+        main {
+            width: min(980px, 96vw);
+            margin: 32px auto;
+            background: rgba(15, 23, 42, 0.85);
+            border-radius: 16px;
+            box-shadow: 0 16px 48px rgba(15, 23, 42, 0.65);
+            backdrop-filter: blur(18px);
+            border: 1px solid rgba(148, 163, 184, 0.25);
+            overflow: hidden;
+        }
+        header {
+            background: linear-gradient(135deg, rgba(59, 130, 246, 0.35), rgba(236, 72, 153, 0.35));
+            padding: 28px 36px;
+        }
+        header h1 {
+            margin: 0;
+            font-size: 2rem;
+            letter-spacing: 0.05em;
+        }
+        header p {
+            margin: 6px 0 0;
+            color: rgba(226, 232, 240, 0.85);
+            font-size: 0.95rem;
+        }
+        section {
+            padding: 32px 36px;
+            display: grid;
+            gap: 24px;
+        }
+        form {
+            display: grid;
+            gap: 20px;
+        }
+        fieldset {
+            border: 1px solid rgba(148, 163, 184, 0.3);
+            border-radius: 12px;
+            padding: 20px;
+            display: grid;
+            gap: 14px;
+        }
+        legend {
+            padding: 0 8px;
+            font-weight: 600;
+            color: rgba(148, 163, 184, 0.95);
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-size: 0.75rem;
+        }
+        label {
+            display: grid;
+            gap: 6px;
+            font-size: 0.95rem;
+        }
+        input[type="file"],
+        select,
+        input[type="text"],
+        input[type="number"] {
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid rgba(148, 163, 184, 0.35);
+            border-radius: 10px;
+            padding: 10px 12px;
+            color: inherit;
+            font-size: 0.95rem;
+        }
+        input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            accent-color: #38bdf8;
+        }
+        .checkbox-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 0.95rem;
+        }
+        button {
+            border: none;
+            border-radius: 999px;
+            padding: 14px 24px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            background: linear-gradient(135deg, #38bdf8, #6366f1);
+            color: #0f172a;
+            transition: transform 0.15s ease;
+        }
+        button:disabled {
+            opacity: 0.6;
+            cursor: wait;
+        }
+        button:not(:disabled):hover {
+            transform: translateY(-1px);
+        }
+        #log {
+            background: rgba(15, 23, 42, 0.65);
+            border-radius: 12px;
+            border: 1px solid rgba(148, 163, 184, 0.3);
+            padding: 16px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: "Fira Code", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 0.85rem;
+            line-height: 1.6;
+            white-space: pre-line;
+        }
+        #results a {
+            color: #38bdf8;
+            text-decoration: none;
+        }
+        #results a:hover {
+            text-decoration: underline;
+        }
+        .flex {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+        .flex > label, .flex > .field {
+            flex: 1 1 220px;
+        }
+        .actions {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: rgba(59, 130, 246, 0.18);
+            border: 1px solid rgba(59, 130, 246, 0.35);
+            border-radius: 999px;
+            padding: 6px 12px;
+            font-size: 0.8rem;
+        }
+    </style>
+</head>
+<body>
+<main>
+    <header>
+        <h1>Bluez Dubbing Studio</h1>
+        <p>Upload media, choose strategy, and orchestrate ASR → Translation → TTS in one place.</p>
+    </header>
+    <section>
+        <form id="dub-form">
+            <fieldset>
+                <legend>Media</legend>
+                <label>
+                    Source Video / Audio
+                    <input type="file" name="file" accept="video/*,audio/*" required>
+                </label>
+                <div class="flex">
+                    <label>
+                        Task
+                        <select name="target_work">
+                            <option value="dub">Dubbing</option>
+                            <option value="sub">Subtitling</option>
+                        </select>
+                    </label>
+                    <label>
+                        Source Language
+                        <input type="text" name="source_lang" list="language-list" placeholder="auto-detect (leave blank)">
+                    </label>
+                    <label>
+                        Target Language
+                        <input type="text" name="target_lang" list="language-list" placeholder="e.g. fr">
+                    </label>
+                </div>
+            </fieldset>
+
+            <fieldset>
+                <legend>Models</legend>
+                <div class="flex">
+                    <label>
+                        ASR Model
+                        <select name="asr_model" id="asr-model">
+                            <option value="auto">Auto</option>
+                        </select>
+                    </label>
+                    <label>
+                        Translation Model
+                        <select name="tr_model" id="tr-model">
+                            <option value="auto">Auto</option>
+                        </select>
+                    </label>
+                    <label>
+                        TTS Model
+                        <select name="tts_model" id="tts-model">
+                            <option value="auto">Auto</option>
+                        </select>
+                    </label>
+                </div>
+                <label>
+                    Audio Separation Model
+                    <select name="sep_model" id="sep-model">
+                        <option value="auto">Auto</option>
+                    </select>
+                </label>
+            </fieldset>
+
+            <fieldset>
+                <legend>Strategies</legend>
+                <div class="flex">
+                    <label>
+                        Translation Strategy
+                        <select name="translation_strategy" id="translation-strategy"></select>
+                    </label>
+                    <label>
+                        Dubbing Strategy
+                        <select name="dubbing_strategy" id="dubbing-strategy"></select>
+                    </label>
+                    <label>
+                        Subtitle Style
+                        <select name="subtitle_style" id="subtitle-style">
+                            <option value="">No subtitles</option>
+                        </select>
+                    </label>
+                </div>
+            </fieldset>
+
+            <fieldset>
+                <legend>Toggles</legend>
+                <div class="flex">
+                    <label class="checkbox-row">
+                        <input type="checkbox" id="persist-intermediate" name="persist_intermediate">
+                        Keep intermediate artefacts
+                    </label>
+                    <label class="checkbox-row">
+                        <input type="checkbox" id="audio-sep" name="audio_sep" checked>
+                        Perform source separation
+                    </label>
+                    <label class="checkbox-row">
+                        <input type="checkbox" id="vad-trim" name="perform_vad_trimming" checked>
+                        Trim TTS with VAD
+                    </label>
+                    <label class="checkbox-row">
+                        <input type="checkbox" id="sophisticated-timing" name="sophisticated_dub_timing" checked>
+                        Sophisticated dub timing
+                    </label>
+                </div>
+            </fieldset>
+
+            <div class="actions">
+                <button type="submit" id="run-btn">Run dubbing pipeline</button>
+                <span class="badge" id="status-badge">Idle</span>
+            </div>
+        </form>
+
+        <div>
+            <h2>Live Log</h2>
+            <div id="log">Waiting…</div>
+        </div>
+
+        <div>
+            <h2>Results</h2>
+            <div id="results">No runs yet.</div>
+        </div>
+
+        <datalist id="language-list"></datalist>
+    </section>
+</main>
+
+<script>
+const logEl = document.getElementById("log");
+const resultsEl = document.getElementById("results");
+const statusBadge = document.getElementById("status-badge");
+const runBtn = document.getElementById("run-btn");
+const formEl = document.getElementById("dub-form");
+const sourceLangInput = document.querySelector("input[name='source_lang']");
+const targetLangInput = document.querySelector("input[name='target_lang']");
+
+let optionsCache = null;
+let asrModels = [];
+let translationModels = [];
+let ttsModels = [];
+
+const languageMap = new Map();
+const languageDisplay = typeof Intl !== "undefined" && Intl.DisplayNames
+    ? new Intl.DisplayNames([navigator.language || "en"], { type: "language" })
+    : null;
+
+function toLanguageLabel(code) {
+    if (!code) return "";
+    const lower = code.toLowerCase();
+    const label = languageDisplay ? languageDisplay.of(lower) : null;
+    if (!label) return lower;
+    return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+function registerLanguage(code) {
+    if (!code) return "";
+    const normalized = code.toLowerCase();
+    const label = toLanguageLabel(normalized);
+    const display = `${label} (${normalized})`;
+    const keys = [
+        normalized,
+        label.toLowerCase(),
+        display.toLowerCase(),
+        `${label} (${normalized.toUpperCase()})`.toLowerCase(),
+    ];
+    keys.forEach(key => {
+        if (!languageMap.has(key)) {
+            languageMap.set(key, normalized);
+        }
+    });
+    return display;
+}
+
+function resolveLanguageCode(value) {
+    if (!value) return "";
+    const strValue = typeof value === "string" ? value : String(value);
+    const trimmed = strValue.trim();
+    if (!trimmed) return "";
+    const match = trimmed.match(/\(([a-zA-Z-]+)\)\s*$/);
+    if (match && match[1]) {
+        const candidate = match[1].toLowerCase();
+        if (languageMap.has(candidate)) {
+            return languageMap.get(candidate);
+        }
+        return candidate;
+    }
+    const key = trimmed.toLowerCase();
+    if (languageMap.has(key)) {
+        return languageMap.get(key);
+    }
+    return key;
+}
+
+async function fetchOptions() {
+    const resp = await fetch("/ui/options");
+    if (!resp.ok) throw new Error("Unable to load model registry");
+    optionsCache = await resp.json();
+    populateSelectors(optionsCache);
+}
+
+function populateSelectors(opts) {
+    const asrSelect = document.getElementById("asr-model");
+    const trSelect = document.getElementById("tr-model");
+    const ttsSelect = document.getElementById("tts-model");
+    const sepSelect = document.getElementById("sep-model");
+    const translationStrategy = document.getElementById("translation-strategy");
+    const dubbingStrategy = document.getElementById("dubbing-strategy");
+    const subtitleStyle = document.getElementById("subtitle-style");
+    const languageList = document.getElementById("language-list");
+
+    asrModels = opts.asr_models || [];
+    translationModels = opts.translation_models || [];
+    ttsModels = opts.tts_models || [];
+
+    const codes = new Set();
+    [asrModels, translationModels, ttsModels].forEach(group => {
+        group.forEach(model => (model.languages || []).forEach(lang => codes.add(lang)));
+    });
+
+    function refreshModelSelect(select, models, languageCode) {
+        const previous = select.value;
+        select.innerHTML = "";
+        const autoOption = document.createElement("option");
+        autoOption.value = "auto";
+        autoOption.textContent = "Auto";
+        select.appendChild(autoOption);
+
+        models.forEach(model => {
+            const supportsLanguage =
+                !languageCode ||
+                !(model.languages || []).length ||
+                model.languages.includes(languageCode);
+            if (!supportsLanguage) {
+                return;
+            }
+            const option = document.createElement("option");
+            option.value = model.key;
+            option.textContent = model.key;
+            select.appendChild(option);
+        });
+
+        if ([...select.options].some(opt => opt.value === previous)) {
+            select.value = previous;
+        }
+    }
+
+    const initSourceCode = resolveLanguageCode(sourceLangInput.value);
+    const initTargetCode = resolveLanguageCode(targetLangInput.value) || initSourceCode;
+    refreshModelSelect(asrSelect, asrModels, initSourceCode);
+    refreshModelSelect(trSelect, translationModels, initTargetCode);
+    refreshModelSelect(ttsSelect, ttsModels, resolveLanguageCode(targetLangInput.value));
+
+    opts.audio_separation_models.forEach(group => {
+        const optGroup = document.createElement("optgroup");
+        optGroup.label = group.architecture;
+        group.models.forEach(model => {
+            const opt = document.createElement("option");
+            opt.value = model.filename;
+            opt.textContent = `${model.filename} (${model.stems.join(" + ")})`;
+            optGroup.appendChild(opt);
+        });
+        sepSelect.appendChild(optGroup);
+    });
+
+    opts.translation_strategies.forEach(strategy => {
+        const option = document.createElement("option");
+        option.value = strategy;
+        option.textContent = strategy;
+        translationStrategy.appendChild(option);
+    });
+
+    opts.dubbing_strategies.forEach(strategy => {
+        const option = document.createElement("option");
+        option.value = strategy;
+        option.textContent = strategy;
+        dubbingStrategy.appendChild(option);
+    });
+
+    opts.subtitle_styles.forEach(style => {
+        ["Desktop", "Mobile"].forEach(mode => {
+            const value = mode === "Mobile" ? `${style}_mobile` : style;
+            const option = document.createElement("option");
+            option.value = value;
+            option.textContent = `${style} (${mode})`;
+            subtitleStyle.appendChild(option);
+        });
+    });
+
+    Array.from(codes)
+        .map(code => ({ code, display: registerLanguage(code) }))
+        .sort((a, b) => a.display.localeCompare(b.display))
+        .forEach(lang => {
+            const option = document.createElement("option");
+            option.value = lang.display;
+            languageList.appendChild(option);
+        });
+
+    sourceLangInput.addEventListener("input", () => {
+        const sourceCode = resolveLanguageCode(sourceLangInput.value);
+        const targetCode = resolveLanguageCode(targetLangInput.value) || sourceCode;
+        refreshModelSelect(asrSelect, asrModels, sourceCode);
+        refreshModelSelect(trSelect, translationModels, targetCode);
+    });
+    targetLangInput.addEventListener("input", () => {
+        const targetCode = resolveLanguageCode(targetLangInput.value);
+        const sourceCode = resolveLanguageCode(sourceLangInput.value);
+        refreshModelSelect(trSelect, translationModels, targetCode || sourceCode);
+        refreshModelSelect(ttsSelect, ttsModels, targetCode);
+    });
+}
+
+function appendLog(message) {
+    const now = new Date().toLocaleTimeString();
+    logEl.textContent += `\n[${now}] ${message}`;
+    logEl.scrollTop = logEl.scrollHeight;
+}
+
+function resetLog() {
+    logEl.textContent = "Waiting…";
+}
+
+function setStatus(text, tone = "idle") {
+    statusBadge.textContent = text;
+    const palette = {
+        idle: "rgba(59, 130, 246, 0.18)",
+        running: "rgba(52, 211, 153, 0.2)",
+        success: "rgba(34, 197, 94, 0.25)",
+        error: "rgba(239, 68, 68, 0.25)"
+    };
+    statusBadge.style.background = palette[tone] || palette.idle;
+    statusBadge.style.borderColor = palette[tone] || palette.idle;
+}
+
+function renderResults(payload) {
+    if (!payload) {
+        resultsEl.textContent = "Pipeline finished without a payload.";
+        return;
+    }
+    const { final_video, final_audio, speech_track, subtitles, models, timings, workspace_id } = payload;
+
+    function renderLink(item, label) {
+        if (!item || !item.url) return `<li>${label}: unavailable</li>`;
+        return `<li>${label}: <a href="${item.url}" target="_blank" rel="noopener">${item.path}</a></li>`;
+    }
+
+    resultsEl.innerHTML = `
+        <p><strong>Workspace:</strong> ${workspace_id || "n/a"}</p>
+        <p><strong>Models:</strong> ASR=${models?.asr || "n/a"}, Translation=${models?.translation || "n/a"}, TTS=${models?.tts || "n/a"}</p>
+        <ul>
+            ${renderLink(final_video, "Final video")}
+            ${renderLink(final_audio, "Final dubbed audio")}
+            ${renderLink(speech_track, "Speech track")}
+        </ul>
+        <details>
+            <summary>Subtitles</summary>
+            <ul>
+                ${renderLink(subtitles?.original?.srt, "Original SRT")}
+                ${renderLink(subtitles?.original?.vtt, "Original VTT")}
+                ${renderLink(subtitles?.aligned?.srt, "Dubbed SRT")}
+                ${renderLink(subtitles?.aligned?.vtt, "Dubbed VTT")}
+            </ul>
+        </details>
+        <details>
+            <summary>Timings</summary>
+            <ul>
+                ${Object.entries(timings || {}).map(([step, duration]) => `<li>${step}: ${duration.toFixed(2)}s</li>`).join("")}
+            </ul>
+        </details>
+    `;
+}
+
+formEl.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!optionsCache) {
+        appendLog("⚠️ Model registry not loaded.");
+        return;
+    }
+
+    const formData = new FormData(formEl);
+    if (!formData.get("file") || !formData.get("file").size) {
+        appendLog("⚠️ Please select a media file.");
+        return;
+    }
+
+    const resolvedSource = resolveLanguageCode(formData.get("source_lang"));
+    const resolvedTarget = resolveLanguageCode(formData.get("target_lang"));
+    formData.set("source_lang", resolvedSource);
+    formData.set("target_lang", resolvedTarget);
+
+    formData.set("audio_sep", document.getElementById("audio-sep").checked ? "true" : "false");
+    formData.set("perform_vad_trimming", document.getElementById("vad-trim").checked ? "true" : "false");
+    formData.set("sophisticated_dub_timing", document.getElementById("sophisticated-timing").checked ? "true" : "false");
+    formData.set("persist_intermediate", document.getElementById("persist-intermediate").checked ? "true" : "false");
+
+    resetLog();
+    logEl.textContent = "Starting pipeline…";
+    setStatus("Running", "running");
+    runBtn.disabled = true;
+
+    try {
+        const response = await fetch("/ui/run", {
+            method: "POST",
+            body: formData,
+        });
+        if (!response.ok) {
+            throw new Error(`Request failed: ${response.status}`);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
+
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n\n");
+            buffer = lines.pop() || "";
+
+            for (const block of lines) {
+                const line = block.split("\n").find(l => l.startsWith("data:"));
+                if (!line) continue;
+                const data = JSON.parse(line.slice(5).trim());
+                handleEvent(data);
+            }
+        }
+
+        if (buffer.trim()) {
+            const line = buffer.split("\n").find(l => l.startsWith("data:"));
+            if (line) {
+                const data = JSON.parse(line.slice(5).trim());
+                handleEvent(data);
+            }
+        }
+    } catch (err) {
+        appendLog(`❌ ${err.message}`);
+        setStatus("Error", "error");
+    } finally {
+        runBtn.disabled = false;
+    }
+});
+
+function handleEvent(event) {
+    if (!event || !event.type) return;
+    switch (event.type) {
+        case "step":
+            if (event.event === "start") {
+                appendLog(`▶️  ${event.step}…`);
+            } else if (event.event === "end") {
+                appendLog(`✅ ${event.step} (${event.duration.toFixed(2)}s)`);
+            }
+            break;
+        case "result":
+            appendLog("🎉 Pipeline completed.");
+            setStatus("Done", "success");
+            renderResults(event.result);
+            break;
+        case "error":
+            appendLog(`❌ Error: ${event.message || "unknown failure"}`);
+            setStatus("Error", "error");
+            break;
+        case "complete":
+            appendLog("🏁 Stream closed.");
+            break;
+        default:
+            appendLog(`ℹ️ ${JSON.stringify(event)}`);
+    }
+}
+
+fetchOptions().catch(err => appendLog(`⚠️ ${err.message}`));
+</script>
+</body>
+</html>

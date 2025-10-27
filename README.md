@@ -148,6 +148,59 @@ curl -X POST -G 'http://localhost:8000/v1/dub' \
 
 - All results (final video, audio, subtitles, intermediates) are saved in `outs/<workspace_id>/`.
 
+### **Command-Line Interface**
+
+The orchestrator can also be triggered directly without spinning up the HTTP server:
+
+```bash
+cd bluez-dubbing
+uv run python -m services.orchestrator.cli \
+  /path/to/video.mp4 \
+  --target-lang fr \
+  --translation-strategy default \
+  --output-json ./run-result.json
+```
+
+Run `uv run python -m services.orchestrator.cli --help` to see all available flags.
+
+Additional service-level CLIs are available for debugging individual stages:
+
+```bash
+# Automatic speech recognition (runs WhisperX worker)
+uv run python -m services.asr.cli /path/to/audio.wav --output-json asr.json
+
+# Translation (works with ASR JSON output)
+uv run python -m services.translation.cli asr.json --target-lang fr --output-json translation.json
+
+# Text-to-speech synthesis (works with translation JSON output)
+uv run python -m services.tts.cli translation.json --workspace ./tts_out --output-json tts.json
+```
+
+> **Note:** The orchestrator CLI expects the ASR, translation, and TTS services to be reachable (locally or remote). The per-service CLIs above can be used when you want to run individual stages without launching the APIs.
+
+### **Tests**
+
+CLI behavior is covered by pytest-based unit tests. Run them from the repo root:
+
+```bash
+cd bluez-dubbing
+make test
+```
+
+The `Makefile` target installs the required test dependencies via `uv` and executes pytest inside the orchestrator service.
+
+- Registry tests (`services/*/tests/test_runner_api.py`) validate that every registered ASR/translation/TTS model executes through the corresponding worker shim—useful when you introduce new model configs.
+- An integration test (`services/orchestrator/tests/test_pipeline_integration.py`) drives the orchestrator pipeline end-to-end with patched dependencies to ensure the FastAPI logic and workspace handling remain consistent.
+
+### **Continuous Integration**
+
+The repository ships with a GitHub Actions workflow (`.github/workflows/ci.yml`) that runs automatically on pushes and pull requests. The pipeline:
+
+- sets up Python 3.11 and installs `uv`;
+- executes `make test`, which drives the per-service CLI tests, the worker-registry coverage (ensuring every registered ASR/translation/TTS model executes), and the orchestrator pipeline integration test.
+
+No additional secrets are required. Ensure new code keeps the test matrix green by running `make test` locally before opening a pull request.
+
 ---
 
 ## 🧩 Supported Models

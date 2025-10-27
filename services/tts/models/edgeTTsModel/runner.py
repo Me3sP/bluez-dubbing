@@ -62,10 +62,8 @@ async def synthesize_all(req: TTSRequest, out_format: str, default_voice: str, g
 
     for i, segment in enumerate(req.segments):
         # Decide output file paths
-        base_dir = workspace_path / "tts"
-        base_dir.mkdir(parents=True, exist_ok=True)
-        mp3_path = base_dir / f"seg-{i}.mp3"
-        wav_path = base_dir / f"seg-{i}.wav"
+        mp3_path = workspace_path / f"seg-{i}.mp3"
+        wav_path = workspace_path / f"seg-{i}.wav"
 
         # Choose voice
         key = (segment.speaker_id, segment.lang)

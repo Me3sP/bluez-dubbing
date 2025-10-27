@@ -5,7 +5,6 @@ import threading
 import librosa
 import soundfile as sf
 import numpy as np
-import subprocess
 import json
 from scipy import signal
 import pyrubberband as prb
@@ -17,6 +16,30 @@ import tempfile
 
 _silero_vad_lock = threading.Lock()
 _silero_vad_bundle: Optional[Tuple[torch.nn.Module, Tuple]] = None
+
+_AUDIO_EXTENSIONS = {
+    ".wav",
+    ".mp3",
+    ".flac",
+    ".ogg",
+    ".m4a",
+    ".aac",
+    ".wma",
+    ".aiff",
+    ".aif",
+    ".opus",
+}
+
+_VIDEO_EXTENSIONS = {
+    ".mp4",
+    ".mkv",
+    ".avi",
+    ".mov",
+    ".webm",
+    ".flv",
+    ".wmv",
+    ".m4v",
+}
 
 
 def _load_silero_vad():
@@ -1000,28 +1023,57 @@ def get_audio_duration(path: Path | str) -> float:
         return cached
 
     duration: Optional[float] = None
-    try:
-        info = sf.info(resolved)
-        if info.frames and info.samplerate:
-            duration = info.frames / float(info.samplerate)
-    except Exception:
-        duration = None
+    suffix = Path(resolved).suffix.lower()
 
-    if duration is None:
+    def probe_via_ffprobe() -> Optional[float]:
         try:
-            ta_info = torchaudio.info(resolved)
-            if ta_info.num_frames and ta_info.sample_rate:
-                duration = ta_info.num_frames / float(ta_info.sample_rate)
+            out = subprocess.check_output(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    resolved,
+                ],
+                text=True,
+            ).strip()
+        except subprocess.CalledProcessError:
+            return None
+        try:
+            return float(out)
+        except (TypeError, ValueError):
+            return None
+
+    prefer_ffprobe = suffix in _VIDEO_EXTENSIONS or suffix not in _AUDIO_EXTENSIONS
+
+    if not prefer_ffprobe:
+        try:
+            info = sf.info(resolved)
+            if info.frames and info.samplerate:
+                duration = info.frames / float(info.samplerate)
         except Exception:
             duration = None
 
+        if duration is None:
+            try:
+                ta_info = torchaudio.info(resolved)
+                if ta_info.num_frames and ta_info.sample_rate:
+                    duration = ta_info.num_frames / float(ta_info.sample_rate)
+            except Exception:
+                duration = None
+
+        # torchaudio can return extremely short durations for some container formats;
+        # fall back to ffprobe if the figure looks suspicious.
+        if duration is None or duration <= 0.05:
+            duration = probe_via_ffprobe()
+    else:
+        duration = probe_via_ffprobe()
+
     if duration is None:
-        out = subprocess.check_output(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", resolved],
-            text=True
-        ).strip()
-        duration = float(out)
+        raise RuntimeError(f"Unable to determine duration for {resolved}")
 
     with _duration_cache_lock:
         _duration_cache[resolved] = duration
