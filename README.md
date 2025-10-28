@@ -1,38 +1,27 @@
-<p align="center">
-  <img src="assets/icon.png" alt="Project logo">
-</p>
-
-
-<p align="center">
-  <img src="assets/logo.png" alt="My Logo"xed/>
-</p>
-
-<!-- <div style="display:flex; justify-content:flex-start;gap:2px;align-items:center;">
-  <img src="assets/icon.png"
-       alt="Icon"
-       style="height:60px; aspect-ratio:1/1; object-fit:cover; border-radius:8px;">
-  <img src="assets/logo.png"
-       alt="Logo"
-       style="height:60px;">
-</div> -->
-
-<!-- <div style="
-  display: flex;
-  flex-direction: column;    /* stack vertically */
-  align-items: center;       /* center horizontally */
-  width: 200px;              /* total width of both */
+<div style="
+  margin: 32px auto;
+  padding: 36px 42px;
+  max-width: 1080px;
+  border-radius: 24px;
+  background: linear-gradient(135deg, #313338 0%, #232428 35%, #1e1f22 100%);
+  color: #f2f3f5;
+  font-family: 'Inter', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(80, 82, 87, 0.45);
 ">
-  <img src="assets/icon.png"
-       alt="Icon"
-       style="width:100%; aspect-ratio:1/1; object-fit:cover;">
-  <img src="assets/logo.png"
-       alt="Logo"
-       style="width:100%; height:auto; margin-top:8px;">
-</div> -->
-
-
-                                                                                                    
-# Bluez-Dubbing: Multilingual AI Dubbing Pipeline
+  <div style="display:flex; align-items:center; gap:14px; margin-bottom:28px;">
+    <img src="assets/icon.png"
+         alt="Bluez icon"
+         style="height:64px; width:64px; border-radius:16px; object-fit:cover; box-shadow:0 8px 18px rgba(0,0,0,0.4);">
+    <img src="assets/logo.png"
+         alt="Bluez logo"
+         style="height:64px;">
+  </div>
+  <h1 style="margin:0 0 8px; font-size:2.75rem; letter-spacing:-0.015em;">Bluez-Dubbing: Multilingual AI Dubbing Pipeline</h1>
+  <p style="margin:0; font-size:1.05rem; color:#b5bac1;">
+    Inspired by Discord’s sleek aesthetic—choose your mode, dub in any language, enjoy crystal-clear vocals.
+  </p>
+</div>
 
 Bluez-Dubbing is a modular, production-ready pipeline for **automatic video dubbing** and **subtitle generation**. It leverages state-of-the-art models for ASR (Automatic Speech Recognition), translation, and TTS (Text-to-Speech), supporting advanced features like audio source separation, VAD-based trimming, sophisticated dubbing strategies, and customizable subtitle styles.
 

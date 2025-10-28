@@ -1340,6 +1340,7 @@ dependencies = [
     { name = "torch" },
     { name = "torchaudio" },
     { name = "uvicorn" },
+    { name = "yt-dlp" },
 ]
 
 [package.metadata]
@@ -1357,6 +1358,7 @@ requires-dist = [
     { name = "torch", specifier = ">=2.8.0" },
     { name = "torchaudio", specifier = ">=2.8.0" },
     { name = "uvicorn", specifier = ">=0.37.0" },
+    { name = "yt-dlp", specifier = ">=2024.7" },
 ]
 
 [[package]]
@@ -2385,4 +2387,13 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/71/57/1616c8274c3442d802621abf5deb230771c7a0fec9414cb6763900eb3868/uvicorn-0.37.0.tar.gz", hash = "sha256:4115c8add6d3fd536c8ee77f0e14a7fd2ebba939fed9b02583a97f80648f9e13", size = 80367, upload-time = "2025-09-23T13:33:47.486Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/85/cd/584a2ceb5532af99dd09e50919e3615ba99aa127e9850eafe5f31ddfdb9a/uvicorn-0.37.0-py3-none-any.whl", hash = "sha256:913b2b88672343739927ce381ff9e2ad62541f9f8289664fa1d1d3803fa2ce6c", size = 67976, upload-time = "2025-09-23T13:33:45.842Z" },
+]
+
+[[package]]
+name = "yt-dlp"
+version = "2025.10.22"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/08/70/cf4bd6c837ab0a709040888caa70d166aa2dfbb5018d1d5c983bf0b50254/yt_dlp-2025.10.22.tar.gz", hash = "sha256:db2d48133222b1d9508c6de757859c24b5cefb9568cf68ccad85dac20b07f77b", size = 3046863, upload-time = "2025-10-22T19:53:19.301Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cc/2a/fd184bf97d570841aa86b4aeb84aee93e7957a34059dafd4982157c10bff/yt_dlp-2025.10.22-py3-none-any.whl", hash = "sha256:9c803a9598859f91d0d5bd3337f1506ecb40bbe97f6efbe93bc4461fed344fb2", size = 3248983, upload-time = "2025-10-22T19:53:16.483Z" },
 ]

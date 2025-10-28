@@ -17,9 +17,9 @@ dependencies = [
     "soundfile>=0.13.1",
     "torch>=2.8.0",
     "torchaudio>=2.8.0",
+    "yt-dlp>=2024.7",
     "uvicorn>=0.37.0",
 ]
 
 [tool.uv.sources]
 common-schemas = { path = "../../libs/common-schemas", editable = true }
-

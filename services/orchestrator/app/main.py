@@ -84,6 +84,10 @@ PROGRESS_REPORTER: contextvars.ContextVar[Optional[Callable[[Dict[str, Any]], No
 )
 
 app.mount("/outs", StaticFiles(directory=str(OUTS)), name="outs")
+if ENABLE_UI:
+    assets_dir = BASE / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
 
 @app.on_event("startup")
@@ -249,6 +253,64 @@ def resolve_media_path(video_url: str) -> str:
     return str(video_path)
 
 
+async def download_media_to_workspace(source_url: str, download_dir: Path) -> Path:
+    logger.info("Downloading remote media: %s", source_url)
+
+    def _download() -> Path:
+        try:
+            import yt_dlp  # noqa: WPS433
+        except ImportError as exc:
+            raise HTTPException(
+                500,
+                "yt-dlp is required to download remote media sources. "
+                "Install it in the orchestrator environment (e.g., `uv add yt-dlp`).",
+            ) from exc
+
+        ydl_opts = {
+            "outtmpl": str(download_dir / "%(id)s.%(ext)s"),
+            "merge_output_format": "mp4",
+            "format": "bv*+ba/b",
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(source_url, download=True)
+            filename = ydl.prepare_filename(info)
+            requested = info.get("requested_downloads") or []
+            for entry in requested:
+                filepath = entry.get("filepath")
+                if filepath:
+                    filename = filepath
+                    break
+            return Path(filename)
+
+    download_dir.mkdir(parents=True, exist_ok=True)
+    local_path = await run_in_thread(_download)
+    if not local_path.exists():
+        raise HTTPException(500, f"Failed to download media from {source_url}")
+    logger.info("Remote media downloaded to %s", local_path)
+    return local_path
+
+
+async def prepare_media_source(
+    source: str,
+    workspace: WorkspaceManager,
+    temp_dir_factory: Callable[[str], Path],
+) -> str:
+    if not source:
+        raise HTTPException(400, "video_url must be provided")
+
+    source = source.strip()
+    if source.startswith(("http://", "https://")):
+        download_dir = workspace.ensure_dir("downloads") if workspace.persist_intermediate else temp_dir_factory("downloads")
+        local_path = await download_media_to_workspace(source, download_dir)
+        return str(local_path)
+
+    return resolve_media_path(source)
+
+
 async def extract_audio_to_workspace(source_url: str, raw_audio_path: Path) -> None:
     if source_url.endswith(VIDEO_EXTENSIONS):
         cmd = [
@@ -394,9 +456,14 @@ async def run_translation_step(
         segments=segments,
         source_lang=source_lang if source_lang else None,
         target_lang=target_lang if target_lang else None,
-    )
+        )
     response = await client.post(TR_URL, params={"model_key": tr_model}, json=tr_req.model_dump())
     if response.status_code != 200:
+        error_log = (
+            f"Translation service call failed (model={tr_model}, "
+            f"segments={len(segments)}, source_lang={source_lang}, target_lang={target_lang}): {response.text}"
+        )
+        logger.error(error_log)
         raise HTTPException(500, f"Translation failed: {response.text}")
     return ASRResponse(**response.json())
 
@@ -605,7 +672,8 @@ if ENABLE_UI:
     @app.post("/ui/run")
     async def ui_run(
         request: Request,
-        file: UploadFile = File(...),
+        file: UploadFile | None = File(None),
+        video_url: Optional[str] = Form(None),
         target_work: str = Form("dub"),
         target_lang: Optional[str] = Form(None),
         source_lang: Optional[str] = Form("en"),
@@ -636,11 +704,19 @@ if ENABLE_UI:
         translation_strategy = (translation_strategy or "default").strip() or "default"
         dubbing_strategy = (dubbing_strategy or "default").strip() or "default"
         subtitle_style = (subtitle_style or "").strip() or None
+        source_media: Optional[str] = None
+        upload_path: Optional[Path] = None
 
-        filename = f"{uuid.uuid4()}_{safe_filename(file.filename)}"
-        upload_path = uploads_dir / filename
-        with upload_path.open("wb") as dest:
-            shutil.copyfileobj(file.file, dest)
+        if file and file.filename:
+            filename = f"{uuid.uuid4()}_{safe_filename(file.filename)}"
+            upload_path = uploads_dir / filename
+            with upload_path.open("wb") as dest:
+                shutil.copyfileobj(file.file, dest)
+            source_media = str(upload_path)
+        elif video_url and video_url.strip():
+            source_media = video_url.strip()
+        else:
+            raise HTTPException(400, "Provide either a media file or a video link.")
 
         queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
 
@@ -654,7 +730,7 @@ if ENABLE_UI:
             token = PROGRESS_REPORTER.set(report)
             try:
                 result = await dub(
-                    video_url=str(upload_path),
+                    video_url=str(source_media),
                     target_work=target_work,
                     target_lang=target_lang,
                     source_lang=source_lang,
@@ -674,6 +750,7 @@ if ENABLE_UI:
                     "type": "result",
                     "result": {
                         "workspace_id": result.get("workspace_id"),
+                        "source_media": result.get("source_media"),
                         "final_video": build_file_payload(result.get("final_video_path")),
                         "final_audio": build_file_payload(result.get("final_audio_path")),
                         "speech_track": build_file_payload(result.get("speech_track")),
@@ -699,7 +776,7 @@ if ENABLE_UI:
                 await queue.put({"type": "error", "message": str(exc)})
             finally:
                 PROGRESS_REPORTER.reset(token)
-                if upload_path.exists():
+                if upload_path and upload_path.exists():
                     upload_path.unlink(missing_ok=True)
                 await queue.put({"type": "complete"})
 
@@ -783,6 +860,8 @@ async def dub(
     """
     Complete dubbing pipeline orchestrator.
     """
+    original_source = video_url
+    video_url = video_url.strip()
     if target_work == "sub" and subtitle_style is None:
         subtitle_style = "default_mobile"
 
@@ -791,19 +870,31 @@ async def dub(
 
     sep_model = (sep_model or "").strip()
     if not sep_model or sep_model.lower() == "auto":
+        # Try the default value for dub first
+        default_sep = "melband_roformer_big_beta5e.ckpt"
         separation_options = list_audio_separation_models()
-        default_sep = None
+        found = False
+        # Check if default_sep exists in the available models
         for group in separation_options:
             for option in group.get("models", []):
-                candidate = option.get("filename")
-                if candidate:
-                    default_sep = candidate
+                if option.get("filename") == default_sep:
+                    sep_model = default_sep
+                    found = True
                     break
-            if default_sep:
+            if found:
                 break
-        if default_sep:
-            sep_model = default_sep
-        else:
+        # If not found, pick the first available model
+        if not found:
+            for group in separation_options:
+                for option in group.get("models", []):
+                    candidate = option.get("filename")
+                    if candidate:
+                        sep_model = candidate
+                        found = True
+                        break
+                if found:
+                    break
+        if not found:
             raise HTTPException(500, "No audio separation models available")
 
     asr_model = resolve_model_choice(asr_model, ASR_WORKERS, source_lang, fallback="whisperx")
@@ -840,7 +931,7 @@ async def dub(
         temp_dirs.append(path)
         return path
 
-    resolved_video_url = resolve_media_path(video_url)
+    resolved_video_url = await prepare_media_source(video_url, workspace, make_temp_dir)
 
     if workspace.persist_intermediate:
         preprocessing_dir = workspace.ensure_dir("preprocessing")
@@ -1095,6 +1186,7 @@ async def dub(
             "final_video_path": str(final_output) if final_output else str(dubbed_path),
             "final_audio_path": keep_if_persistent(final_audio_path),
             "speech_track": keep_if_persistent(speech_track),
+            "source_media": original_source,
             "models": selected_models,
             "subtitles": {
                 "original": {"srt": keep_if_persistent(srt_path_0), "vtt": keep_if_persistent(vtt_path_0)},

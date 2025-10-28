@@ -6,139 +6,256 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         :root {
-            color-scheme: light dark;
-            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
         }
+
         body {
             margin: 0;
-            padding: 0;
-            background: #0f172a;
-            color: #f8fafc;
             min-height: 100vh;
             display: flex;
             justify-content: center;
             align-items: flex-start;
+            transition: background 0.3s ease, color 0.3s ease;
         }
+
+        body[data-theme="dark"] {
+            background: #1E1F22;
+            color: #f2f3f5;
+        }
+
+        body[data-theme="light"] {
+            background: #f2f3f5;
+            color: #1f2023;
+        }
+
+        body[data-theme="dark"] main {
+            background: linear-gradient(145deg, rgba(35, 37, 41, 0.98), rgba(24, 25, 28, 0.92));
+            border: 1px solid rgba(78, 80, 88, 0.6);
+            box-shadow: 0 24px 48px rgba(0, 0, 0, 0.35);
+        }
+
+        body[data-theme="light"] main {
+            background: linear-gradient(145deg, rgba(255, 255, 255, 0.95), rgba(242, 244, 248, 0.9));
+            border: 1px solid rgba(208, 214, 222, 0.8);
+            box-shadow: 0 20px 45px rgba(45, 55, 72, 0.15);
+        }
+
         main {
             width: min(980px, 96vw);
-            margin: 32px auto;
-            background: rgba(15, 23, 42, 0.85);
-            border-radius: 16px;
-            box-shadow: 0 16px 48px rgba(15, 23, 42, 0.65);
-            backdrop-filter: blur(18px);
-            border: 1px solid rgba(148, 163, 184, 0.25);
+            margin: 40px auto;
+            border-radius: 22px;
             overflow: hidden;
+            backdrop-filter: blur(18px);
         }
+
         header {
-            background: linear-gradient(135deg, rgba(59, 130, 246, 0.35), rgba(236, 72, 153, 0.35));
-            padding: 28px 36px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 28px 34px;
+            gap: 20px;
         }
-        header h1 {
-            margin: 0;
-            font-size: 2rem;
-            letter-spacing: 0.05em;
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 18px;
         }
-        header p {
-            margin: 6px 0 0;
-            color: rgba(226, 232, 240, 0.85);
+
+        .brand img.icon {
+            height: 66px;
+            width: 66px;
+            border-radius: 18px;
+            object-fit: cover;
+            box-shadow: 0 12px 24px rgba(0, 0, 0, 0.35);
+        }
+
+        .brand img.logo {
+            height: 64px;
+        }
+
+        .tagline {
+            margin: 4px 0 0;
             font-size: 0.95rem;
+            opacity: 0.7;
         }
+
+        body[data-theme="light"] .tagline {
+            color: #4f5660;
+        }
+
+        .theme-toggle {
+            border: none;
+            border-radius: 999px;
+            padding: 10px 18px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            background: linear-gradient(135deg, #5865F2, #5865f2cc 70%, #7289da);
+            color: #fff;
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .theme-toggle:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 10px 18px rgba(88, 101, 242, 0.35);
+        }
+
         section {
-            padding: 32px 36px;
+            padding: 30px 34px 36px;
             display: grid;
-            gap: 24px;
+            gap: 26px;
         }
+
         form {
             display: grid;
             gap: 20px;
         }
+
         fieldset {
-            border: 1px solid rgba(148, 163, 184, 0.3);
-            border-radius: 12px;
-            padding: 20px;
+            border: 1px solid rgba(148, 156, 174, 0.3);
+            border-radius: 16px;
+            padding: 22px;
             display: grid;
-            gap: 14px;
+            gap: 16px;
+            background: rgba(49, 51, 56, 0.32);
         }
+
+        body[data-theme="light"] fieldset {
+            background: rgba(246, 248, 252, 0.9);
+            border-color: rgba(188, 196, 212, 0.6);
+        }
+
         legend {
-            padding: 0 8px;
-            font-weight: 600;
-            color: rgba(148, 163, 184, 0.95);
+            padding: 0 10px;
+            font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 0.08em;
-            font-size: 0.75rem;
+            letter-spacing: 0.12em;
+            font-size: 0.74rem;
+            opacity: 0.7;
         }
+
         label {
             display: grid;
             gap: 6px;
-            font-size: 0.95rem;
+            font-size: 0.96rem;
+            font-weight: 500;
         }
+
         input[type="file"],
         select,
         input[type="text"],
-        input[type="number"] {
-            background: rgba(15, 23, 42, 0.6);
-            border: 1px solid rgba(148, 163, 184, 0.35);
-            border-radius: 10px;
-            padding: 10px 12px;
-            color: inherit;
+        input[type="url"] {
+            border-radius: 12px;
+            padding: 12px 14px;
             font-size: 0.95rem;
+            border: 1px solid rgba(111, 118, 136, 0.35);
+            background: rgba(32, 34, 37, 0.9);
+            color: inherit;
+            transition: border 0.15s ease, box-shadow 0.15s ease;
         }
+
+        body[data-theme="light"] input[type="file"],
+        body[data-theme="light"] select,
+        body[data-theme="light"] input[type="text"],
+        body[data-theme="light"] input[type="url"] {
+            background: #fff;
+            border: 1px solid rgba(182, 189, 204, 0.7);
+        }
+
+        input[type="file"]::-webkit-file-upload-button {
+            border: none;
+            border-radius: 999px;
+            padding: 6px 16px;
+            background: #5865F2;
+            color: #fff;
+            cursor: pointer;
+        }
+
+        input[type="file"]:focus,
+        select:focus,
+        input[type="text"]:focus,
+        input[type="url"]:focus {
+            outline: none;
+            border-color: #5865F2;
+            box-shadow: 0 0 0 3px rgba(88, 101, 242, 0.2);
+        }
+
         input[type="checkbox"] {
             width: 18px;
             height: 18px;
-            accent-color: #38bdf8;
+            accent-color: #5865F2;
         }
+
         .checkbox-row {
             display: flex;
             align-items: center;
             gap: 10px;
             font-size: 0.95rem;
         }
-        button {
+
+        button.primary {
             border: none;
             border-radius: 999px;
-            padding: 14px 24px;
+            padding: 15px 26px;
             font-size: 1rem;
             font-weight: 600;
             cursor: pointer;
-            background: linear-gradient(135deg, #38bdf8, #6366f1);
-            color: #0f172a;
-            transition: transform 0.15s ease;
+            background: linear-gradient(135deg, #5865F2, #4752C4);
+            color: #fff;
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
         }
-        button:disabled {
-            opacity: 0.6;
+
+        button.primary:disabled {
+            opacity: 0.55;
             cursor: wait;
         }
-        button:not(:disabled):hover {
+
+        button.primary:not(:disabled):hover {
             transform: translateY(-1px);
+            box-shadow: 0 10px 20px rgba(88, 101, 242, 0.4);
         }
+
         #log {
-            background: rgba(15, 23, 42, 0.65);
-            border-radius: 12px;
-            border: 1px solid rgba(148, 163, 184, 0.3);
-            padding: 16px;
-            max-height: 300px;
+            border-radius: 16px;
+            padding: 18px;
+            max-height: 320px;
             overflow-y: auto;
-            font-family: "Fira Code", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
             font-size: 0.85rem;
-            line-height: 1.6;
+            line-height: 1.55;
             white-space: pre-line;
+            border: 1px solid rgba(123, 132, 155, 0.25);
+            background: rgba(28, 29, 33, 0.65);
         }
+
+        body[data-theme="light"] #log {
+            background: rgba(255, 255, 255, 0.85);
+            border: 1px solid rgba(209, 214, 224, 0.7);
+        }
+
         #results a {
-            color: #38bdf8;
+            color: #7289DA;
             text-decoration: none;
         }
+
         #results a:hover {
             text-decoration: underline;
         }
+
         .flex {
             display: flex;
             gap: 16px;
             flex-wrap: wrap;
         }
+
         .flex > label, .flex > .field {
             flex: 1 1 220px;
         }
+
         .actions {
             display: flex;
             justify-content: space-between;
@@ -146,23 +263,49 @@
             gap: 16px;
             flex-wrap: wrap;
         }
+
         .badge {
             display: inline-flex;
             align-items: center;
             gap: 6px;
-            background: rgba(59, 130, 246, 0.18);
-            border: 1px solid rgba(59, 130, 246, 0.35);
-            border-radius: 999px;
             padding: 6px 12px;
             font-size: 0.8rem;
+            border-radius: 999px;
+            border: 1px solid rgba(114, 137, 218, 0.4);
+            background: rgba(88, 101, 242, 0.18);
+        }
+
+        body[data-theme="light"] .badge {
+            background: rgba(88, 101, 242, 0.15);
+            border-color: rgba(88, 101, 242, 0.35);
+            color: #3a3f52;
+        }
+
+        .hint {
+            margin: -6px 0 0;
+            font-size: 0.85rem;
+            color: rgba(148, 156, 174, 0.75);
+        }
+
+        body[data-theme="light"] .hint {
+            color: rgba(96, 102, 116, 0.75);
         }
     </style>
 </head>
 <body>
 <main>
     <header>
-        <h1>Bluez Dubbing Studio</h1>
-        <p>Upload media, choose strategy, and orchestrate ASR → Translation → TTS in one place.</p>
+        <div class="brand">
+            <img src="/assets/icon.png" alt="Bluez icon" class="icon">
+            <div>
+                <img src="/assets/logo.png" alt="Bluez logo" class="logo">
+                <p class="tagline">Choose your vibe, dub in any language, monitor every step.</p>
+            </div>
+        </div>
+        <button type="button" class="theme-toggle" id="theme-toggle">
+            <span aria-hidden="true">🌙</span>
+            <span class="theme-label">Dark</span>
+        </button>
     </header>
     <section>
         <form id="dub-form">
@@ -170,8 +313,13 @@
                 <legend>Media</legend>
                 <label>
                     Source Video / Audio
-                    <input type="file" name="file" accept="video/*,audio/*" required>
+                    <input type="file" name="file" accept="video/*,audio/*">
                 </label>
+                <label>
+                    Or Video Link
+                    <input type="url" name="video_url" placeholder="https://www.youtube.com/watch?v=...">
+                </label>
+                <p class="hint">Provide either a local file or a public video URL (YouTube, Instagram, TikTok, ...).</p>
                 <div class="flex">
                     <label>
                         Task
@@ -264,7 +412,7 @@
             </fieldset>
 
             <div class="actions">
-                <button type="submit" id="run-btn">Run dubbing pipeline</button>
+                <button type="submit" id="run-btn" class="primary">Run dubbing pipeline</button>
                 <span class="badge" id="status-badge">Idle</span>
             </div>
         </form>
@@ -291,6 +439,10 @@ const runBtn = document.getElementById("run-btn");
 const formEl = document.getElementById("dub-form");
 const sourceLangInput = document.querySelector("input[name='source_lang']");
 const targetLangInput = document.querySelector("input[name='target_lang']");
+const videoLinkInput = document.querySelector("input[name='video_url']");
+const fileInput = document.querySelector("input[type='file']");
+const themeToggle = document.getElementById("theme-toggle");
+const themeLabel = document.querySelector("#theme-toggle .theme-label");
 
 let optionsCache = null;
 let asrModels = [];
@@ -347,6 +499,36 @@ function resolveLanguageCode(value) {
         return languageMap.get(key);
     }
     return key;
+}
+
+const THEME_KEY = "bluez-ui-theme";
+const themeIconSpan = themeToggle ? themeToggle.querySelector("span[aria-hidden='true']") : null;
+
+function applyTheme(theme) {
+    const normalized = theme === "light" ? "light" : "dark";
+    document.body.dataset.theme = normalized;
+    document.body.style.colorScheme = normalized;
+    if (themeLabel) {
+        themeLabel.textContent = normalized === "dark" ? "Dark" : "Light";
+    }
+    if (themeIconSpan) {
+        themeIconSpan.textContent = normalized === "dark" ? "🌙" : "☀️";
+    }
+}
+
+if (themeToggle) {
+    const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+    const storedTheme = localStorage.getItem(THEME_KEY) || (prefersDark ? "dark" : "light");
+    applyTheme(storedTheme);
+
+    themeToggle.addEventListener("click", () => {
+        const next = document.body.dataset.theme === "dark" ? "light" : "dark";
+        applyTheme(next);
+        localStorage.setItem(THEME_KEY, next);
+    });
+} else {
+    document.body.dataset.theme = "dark";
+    document.body.style.colorScheme = "dark";
 }
 
 async function fetchOptions() {
@@ -494,7 +676,7 @@ function renderResults(payload) {
         resultsEl.textContent = "Pipeline finished without a payload.";
         return;
     }
-    const { final_video, final_audio, speech_track, subtitles, models, timings, workspace_id } = payload;
+    const { final_video, final_audio, speech_track, subtitles, models, timings, workspace_id, source_media } = payload;
 
     function renderLink(item, label) {
         if (!item || !item.url) return `<li>${label}: unavailable</li>`;
@@ -503,6 +685,7 @@ function renderResults(payload) {
 
     resultsEl.innerHTML = `
         <p><strong>Workspace:</strong> ${workspace_id || "n/a"}</p>
+        <p><strong>Source:</strong> ${source_media || "n/a"}</p>
         <p><strong>Models:</strong> ASR=${models?.asr || "n/a"}, Translation=${models?.translation || "n/a"}, TTS=${models?.tts || "n/a"}</p>
         <ul>
             ${renderLink(final_video, "Final video")}
@@ -535,9 +718,22 @@ formEl.addEventListener("submit", async (event) => {
     }
 
     const formData = new FormData(formEl);
-    if (!formData.get("file") || !formData.get("file").size) {
-        appendLog("⚠️ Please select a media file.");
+    const hasFile = fileInput.files && fileInput.files.length > 0;
+    const linkValue = videoLinkInput.value.trim();
+    if (!hasFile && !linkValue) {
+        appendLog("⚠️ Provide a media file or a video link.");
+        setStatus("Error", "error");
         return;
+    }
+
+    if (linkValue) {
+        formData.set("video_url", linkValue);
+    } else {
+        formData.delete("video_url");
+    }
+
+    if (!hasFile) {
+        formData.delete("file");
     }
 
     const resolvedSource = resolveLanguageCode(formData.get("source_lang"));
