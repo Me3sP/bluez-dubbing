@@ -88,6 +88,38 @@ if ENABLE_UI:
     assets_dir = BASE / "assets"
     if assets_dir.exists():
         app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+        @app.get("/favicon.ico") # added that because the browser requests it automatically, so it to avoid 404 errors
+        async def favicon() -> FileResponse:  # type: ignore[override]
+            icon = assets_dir / "icon.png"
+            fallback = assets_dir / "icon2.png"
+            target = icon if icon.exists() else fallback
+            if not target.exists():
+                raise HTTPException(404, "favicon not found")
+            return FileResponse(target, media_type="image/png")
+
+
+def emit_progress(event: Dict[str, Any]) -> None:
+    reporter = PROGRESS_REPORTER.get()
+    if reporter is None:
+        return
+    try:
+        reporter(event)
+    except Exception:  # noqa: BLE001
+        logger.debug("Progress reporter failed for %s", event, exc_info=True)
+
+
+def build_file_payload(path_str: str | Path | None) -> Optional[Dict[str, str]]:
+    if not path_str:
+        return None
+    resolved = Path(path_str).resolve()
+    if not resolved.exists():
+        return None
+    try:
+        resolved.relative_to(OUTS)
+    except ValueError:
+        return None
+    query = urllib.parse.quote(str(resolved), safe="")
+    return {"path": str(resolved), "url": f"/ui/file?path={query}"}
 
 
 @app.on_event("startup")
@@ -255,6 +287,7 @@ def resolve_media_path(video_url: str) -> str:
 
 async def download_media_to_workspace(source_url: str, download_dir: Path) -> Path:
     logger.info("Downloading remote media: %s", source_url)
+    emit_progress({"type": "status", "event": "download_start", "url": source_url})
 
     def _download() -> Path:
         try:
@@ -273,6 +306,17 @@ async def download_media_to_workspace(source_url: str, download_dir: Path) -> Pa
             "noplaylist": True,
             "quiet": True,
             "no_warnings": True,
+            "progress_hooks": [
+                lambda d: emit_progress(
+                    {
+                        "type": "status",
+                        "event": "download_progress",
+                        "url": source_url,
+                        "downloaded": d.get("downloaded_bytes"),
+                        "total": d.get("total_bytes") or d.get("total_bytes_estimate"),
+                    }
+                ),
+            ],
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -291,6 +335,12 @@ async def download_media_to_workspace(source_url: str, download_dir: Path) -> Pa
     if not local_path.exists():
         raise HTTPException(500, f"Failed to download media from {source_url}")
     logger.info("Remote media downloaded to %s", local_path)
+    emit_progress({
+        "type": "status",
+        "event": "download_complete",
+        "url": source_url,
+        "path": str(local_path),
+    })
     return local_path
 
 
@@ -298,7 +348,7 @@ async def prepare_media_source(
     source: str,
     workspace: WorkspaceManager,
     temp_dir_factory: Callable[[str], Path],
-) -> str:
+) -> Path:
     if not source:
         raise HTTPException(400, "video_url must be provided")
 
@@ -306,9 +356,24 @@ async def prepare_media_source(
     if source.startswith(("http://", "https://")):
         download_dir = workspace.ensure_dir("downloads") if workspace.persist_intermediate else temp_dir_factory("downloads")
         local_path = await download_media_to_workspace(source, download_dir)
-        return str(local_path)
+    else:
+        local_path = Path(resolve_media_path(source))
 
-    return resolve_media_path(source)
+    suffix = local_path.suffix or ".mp4"
+    source_dir = workspace.ensure_dir("source")
+    destination = source_dir / f"input{suffix}"
+    if local_path.resolve() != destination.resolve():
+        shutil.copy2(local_path, destination)
+
+    preview_payload = build_file_payload(destination)
+    if preview_payload:
+        emit_progress({
+            "type": "source_preview",
+            "path": str(destination),
+            "preview": preview_payload,
+        })
+
+    return destination
 
 
 async def extract_audio_to_workspace(source_url: str, raw_audio_path: Path) -> None:
@@ -620,20 +685,6 @@ def safe_filename(name: str) -> str:
     return stem.replace(" ", "_") or "upload"
 
 
-def build_file_payload(path_str: str | None) -> Optional[Dict[str, str]]:
-    if not path_str:
-        return None
-    resolved = Path(path_str).resolve()
-    if not resolved.exists():
-        return None
-    try:
-        resolved.relative_to(OUTS)
-    except ValueError:
-        return {"path": str(resolved)}
-    query = urllib.parse.quote(str(resolved), safe="")
-    return {"path": str(resolved), "url": f"/ui/file?path={query}"}
-
-
 if ENABLE_UI:
 
     @app.get("/ui", response_class=HTMLResponse)
@@ -751,6 +802,7 @@ if ENABLE_UI:
                     "result": {
                         "workspace_id": result.get("workspace_id"),
                         "source_media": result.get("source_media"),
+                        "source_video": build_file_payload(result.get("source_video")),
                         "final_video": build_file_payload(result.get("final_video_path")),
                         "final_audio": build_file_payload(result.get("final_audio_path")),
                         "speech_track": build_file_payload(result.get("speech_track")),
@@ -931,7 +983,8 @@ async def dub(
         temp_dirs.append(path)
         return path
 
-    resolved_video_url = await prepare_media_source(video_url, workspace, make_temp_dir)
+    resolved_video_path = await prepare_media_source(video_url, workspace, make_temp_dir)
+    source_media_local_path: Optional[Path] = resolved_video_path
 
     if workspace.persist_intermediate:
         preprocessing_dir = workspace.ensure_dir("preprocessing")
@@ -942,7 +995,7 @@ async def dub(
 
     try:
         with step_timer.time("extract_audio"):
-            await extract_audio_to_workspace(resolved_video_url, raw_audio_path)
+            await extract_audio_to_workspace(str(resolved_video_path), raw_audio_path)
 
         vocals_path: Optional[Path] = None
         background_path: Optional[Path] = None
@@ -1157,7 +1210,7 @@ async def dub(
                 else None
             )
         else:
-            dubbed_path = Path(resolved_video_url)
+            dubbed_path = resolved_video_path
             final_output = (
                 workspace.file_path(f"subtitled_video_{target_lang or source_lang}_with_{subtitle_style.split('_')[0]}_subs.mp4")
                 if subtitle_style is not None
@@ -1166,7 +1219,7 @@ async def dub(
 
         with step_timer.time("final_pass"):
             await finalize_media(
-                resolved_video_url,
+                str(resolved_video_path),
                 final_audio_path,
                 dubbed_path,
                 final_output,
@@ -1187,6 +1240,7 @@ async def dub(
             "final_audio_path": keep_if_persistent(final_audio_path),
             "speech_track": keep_if_persistent(speech_track),
             "source_media": original_source,
+            "source_video": keep_if_persistent(source_media_local_path),
             "models": selected_models,
             "subtitles": {
                 "original": {"srt": keep_if_persistent(srt_path_0), "vtt": keep_if_persistent(vtt_path_0)},

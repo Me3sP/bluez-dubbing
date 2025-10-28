@@ -19,7 +19,7 @@
   </div>
   <h1 style="margin:0 0 8px; font-size:2.75rem; letter-spacing:-0.015em;">Bluez-Dubbing: Multilingual AI Dubbing Pipeline</h1>
   <p style="margin:0; font-size:1.05rem; color:#b5bac1;">
-    Inspired by Discord’s sleek aesthetic—choose your mode, dub in any language, enjoy crystal-clear vocals.
+    Choose your mode, dub in any language, enjoy crystal-clear vocals.
   </p>
 </div>
 
@@ -30,13 +30,14 @@ Bluez-Dubbing is a modular, production-ready pipeline for **automatic video dubb
 ## 🚀 Features
 
 - **End-to-End Dubbing:** From video/audio input to fully dubbed output with burned-in subtitles.
+- **Discord-style Web UI:** Upload a file or paste a YouTube/Instagram/TikTok link, watch download progress (via yt-dlp), and preview source/final videos inline.
 - **Modular Services:** Pluggable ASR, translation, and TTS models—easily extend or swap components.
 - **Audio Source Separation:** Isolate vocals and background for high-quality dubbing.
 - **Flexible Translation Strategies:** Segment-wise or full-text translation with alignment.
-- **Advanced Dubbing:** Full replacement or overlay strategies, with sophisticated timing.
+- **Advanced Dubbing:** Full replacement or overlay strategies, with sophisticated timing and optional VAD trimming.
 - **Subtitle Generation:** Multiple styles (e.g., Netflix, mobile) and formats (SRT, VTT, ASS).
-- **Workspace Management:** All intermediate and final files organized per job.
-- **REST API:** FastAPI-based orchestrator for easy integration.
+- **Workspace Management:** All intermediate and final files organized per job with download links.
+- **REST API & CLI:** FastAPI endpoints plus command-line tooling for automation.
 
 ---
 
@@ -70,45 +71,56 @@ git clone https://github.com/your-org/bluez-dubbing.git
 cd bluez-dubbing
 ```
 
-### 2. **Install Dependencies**
+### 2. **Install Dependencies (uv)**
 
-Each service is isolated. Install dependencies for each:
+Install the project's virtual environments and dependencies in one pass using [`uv`](https://github.com/astral-sh/uv):
 
 ```bash
-cd services/asr && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
-cd ../translation && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
-cd ../tts && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
-cd ../orchestrator && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+uv sync
 ```
 
-Or use `pyproject.toml` with `pip install .` in each service.
+This installs all service dependencies (ASR, translation, TTS, orchestrator) into their dedicated `.venv` folders.
 
 ### 3. **Configure Environment**
 
-- Copy `.env.example` to `.env` and fill in required API keys (e.g., for DeepL, OpenAI, Azure, HuggingFace).
-- Place model weights in `models_cache/` as needed.
+- Copy `.env.example` to `.env` and provide provider keys (DeepL, Azure, etc.).
+- Place required model weights in `models_cache/`.
 
-### 4. **Run the Services**
+### 4. **Run the Stack**
 
-Start each service (in separate terminals or with a process manager):
+Launch every microservice with the bundled `Makefile` targets:
 
 ```bash
-# ASR Service
-cd services/asr && source .venv/bin/activate && uvicorn app.main:app --port 8001
+make start-ui   # start full stack + web UI
+```
 
-# Translation Service
-cd ../translation && source .venv/bin/activate && uvicorn app.main:app --port 8002
+To run API-only mode (no UI routes):
 
-# TTS Service
-cd ../tts && source .venv/bin/activate && uvicorn app.main:app --port 8003
+```bash
+make start-api
+```
 
-# Orchestrator (API)
-cd ../orchestrator && source .venv/bin/activate && uvicorn app.main:app --port 8000
+Stop everything:
+
+```bash
+make stop
 ```
 
 ---
 
 ## 🛠️ Usage
+
+### **Web UI**
+
+With `make start-ui` running, open `http://localhost:8000/ui` to access the interactive orchestrator:
+
+- Upload local media **or** provide a public link (YouTube, Instagram, TikTok…)—downloads stream via `yt-dlp` with a live progress bar.
+- Review smart suggestions for source/target languages (English/French pinned, live filtering) and pick models per stage.
+- Track every pipeline step in the live log, including ASR, translation, TTS, separation, etc.
+- Preview the uploaded source and the final rendered video inline.
+- Download final outputs, intermediate JSON dumps, subtitle files, and speech tracks directly from the UI.
+
+Dark/light theme toggles, Discord-inspired visuals, and responsive layouts come baked in.
 
 ### **API Example**
 
