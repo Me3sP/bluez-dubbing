@@ -2,10 +2,88 @@ import json
 from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Optional, Literal, Tuple
-from pathlib import Path
 import shlex
-from common_schemas.models import Word, SubtitleSegment
 import subprocess
+from common_schemas.models import Word, SubtitleSegment
+
+
+@dataclass
+class ChunkSpec:
+    lines: List[str]
+    start_index: int
+    end_index: int
+
+
+_DEFAULT_DESKTOP_RES = (1920, 1080)
+_DEFAULT_MOBILE_RES = (1280, 720)
+
+
+def probe_video_resolution(video_path: Path | str) -> Tuple[int, int]:
+    """
+    Probe the video resolution using ffprobe.
+    Returns (width, height) with safe fallbacks.
+    """
+    path = Path(video_path)
+    if not path.exists():
+        base = _DEFAULT_DESKTOP_RES
+        return base
+
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height",
+        "-of",
+        "json",
+        str(path),
+    ]
+
+    try:
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        payload = json.loads(result.stdout or "{}")
+        streams = payload.get("streams") or []
+        if streams:
+            stream = streams[0]
+            width = int(stream.get("width") or 0)
+            height = int(stream.get("height") or 0)
+            if width > 0 and height > 0:
+                return width, height
+    except (subprocess.CalledProcessError, ValueError, json.JSONDecodeError):
+        pass
+
+    return _DEFAULT_DESKTOP_RES
+
+
+def _compute_style_scale(video_width: int, video_height: int, mobile: bool) -> Tuple[float, float]:
+    """
+    Compute scaling factors for font/margins relative to the target video resolution.
+    Returns (font_scale, margin_width_scale).
+    """
+    base_w, base_h = _DEFAULT_MOBILE_RES if mobile else _DEFAULT_DESKTOP_RES
+    width = max(video_width or base_w, 1)
+    height = max(video_height or base_h, 1)
+
+    scale_h = height / base_h
+    scale_w = width / base_w
+
+    # Font scaling favors the smaller dimension to avoid oversized text on narrow videos.
+    font_scale = min(scale_h, scale_w * 1.15)
+    font_scale = max(0.5, min(font_scale, 1.8))
+
+    margin_w_scale = max(0.5, min(scale_w, 1.5))
+
+    return font_scale, margin_w_scale
+
+
+def _format_metric(value: float) -> str:
+    if isinstance(value, int):
+        return str(value)
+    if abs(value - round(value)) < 1e-3:
+        return str(int(round(value)))
+    return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
 class SegmentCopySubtitleBuilder:
@@ -34,26 +112,163 @@ class SegmentCopySubtitleBuilder:
         self.min_duration = min_duration
         self.max_duration = max_duration
 
-    def build_from_segments(self, segments_json: List[dict]) -> List[SubtitleSegment]:
+    def _normalize_word(self, word_data: Word | dict | None) -> Optional[dict]:
+        if not word_data:
+            return None
+        if isinstance(word_data, Word):
+            return {
+                "text": (word_data.text or "").strip(),
+                "start": word_data.start,
+                "end": word_data.end,
+            }
+        text = (word_data.get("text") or "").strip()
+        return {
+            "text": text,
+            "start": word_data.get("start"),
+            "end": word_data.get("end"),
+        }
+
+    def _chunk_word_tokens(self, tokens: List[str]) -> List[ChunkSpec]:
+        filtered = [tok for tok in tokens if tok]
+        chunks: List[ChunkSpec] = []
+        i = 0
+        while i < len(filtered):
+            chunk_start = i
+            line1: List[str] = []
+            while i < len(filtered):
+                candidate = (" ".join(line1 + [filtered[i]])).strip()
+                if len(candidate) <= self.max_chars_per_line or not line1:
+                    if len(candidate) > self.max_chars_per_line and line1:
+                        break
+                    line1.append(filtered[i])
+                    i += 1
+                else:
+                    break
+
+            line2: List[str] = []
+            if self.max_lines > 1 and i < len(filtered):
+                while i < len(filtered):
+                    candidate = (" ".join(line2 + [filtered[i]])).strip()
+                    if len(candidate) <= self.max_chars_per_line or not line2:
+                        if len(candidate) > self.max_chars_per_line and line2:
+                            break
+                        line2.append(filtered[i])
+                        i += 1
+                    else:
+                        break
+                if line2:
+                    line1, line2 = self._balance_lines(line1, line2)
+
+            lines = [" ".join(line1)] if line1 else []
+            if line2:
+                lines.append(" ".join(line2))
+            if lines:
+                chunks.append(ChunkSpec(lines=lines, start_index=chunk_start, end_index=i))
+
+        return chunks
+
+    def build_from_segments(
+        self,
+        segments_json: List[dict],
+        global_words: Optional[List[dict]] = None,
+    ) -> List[SubtitleSegment]:
         out: List[SubtitleSegment] = []
+
+        global_word_entries: List[dict] = []
+        if global_words:
+            for word in global_words:
+                normalized = self._normalize_word(word)
+                if normalized and normalized["text"]:
+                    global_word_entries.append(normalized)
+            global_word_entries.sort(key=lambda w: (float(w.get("start") or 0.0), float(w.get("end") or 0.0)))
+
+        global_idx = 0
+        tolerance = 0.15
+
         for seg in segments_json:
             text = (seg.get("text") or "").strip()
             if not text:
                 continue
+
             start = float(seg["start"])
             end = float(seg["end"])
             duration = max(0.01, end - start)
 
-            chunks = self._chunk_text(text)
+            segment_word_entries: List[dict] = []
+            if seg.get("words"):
+                for word in seg["words"]:
+                    normalized = self._normalize_word(word)
+                    if normalized and normalized["text"]:
+                        segment_word_entries.append(normalized)
+            elif global_word_entries:
+                # Pull matching words from global list based on timing overlap
+                seg_words: List[dict] = []
+                temp_idx = global_idx
+                while temp_idx < len(global_word_entries) and (global_word_entries[temp_idx].get("end") or 0.0) < start - tolerance:
+                    temp_idx += 1
+                j = temp_idx
+                while j < len(global_word_entries):
+                    word = global_word_entries[j]
+                    w_start = word.get("start")
+                    if w_start is not None and w_start > end + tolerance:
+                        break
+                    seg_words.append(word)
+                    j += 1
+                segment_word_entries = seg_words
+                global_idx = temp_idx
 
-            # Fast path: short text fits in a single cue
+            filtered_words = [w for w in segment_word_entries if w.get("text")]
+            if filtered_words:
+                tokens = [w["text"] for w in filtered_words]
+                chunk_specs = self._chunk_word_tokens(tokens)
+                if chunk_specs:
+                    last_end_time = start
+                    segment_cues: List[SubtitleSegment] = []
+                    for spec in chunk_specs:
+                        chunk_words = filtered_words[spec.start_index:spec.end_index]
+                        if not chunk_words:
+                            continue
+                        chunk_start_time = chunk_words[0].get("start")
+                        chunk_end_time = chunk_words[-1].get("end")
+                        if chunk_start_time is None:
+                            chunk_start_time = chunk_words[0].get("end")
+                        if chunk_end_time is None:
+                            chunk_end_time = chunk_words[-1].get("start")
+                        chunk_start_time = float(chunk_start_time) if chunk_start_time is not None else last_end_time
+                        chunk_end_time = float(chunk_end_time) if chunk_end_time is not None else chunk_start_time
+                        chunk_start_time = max(chunk_start_time, start, last_end_time)
+                        if chunk_end_time <= chunk_start_time:
+                            chunk_end_time = chunk_start_time + 0.01
+                        if chunk_end_time - chunk_start_time < self.min_duration:
+                            chunk_end_time = min(end, chunk_start_time + self.min_duration)
+                        if chunk_end_time - chunk_start_time > self.max_duration:
+                            chunk_end_time = chunk_start_time + self.max_duration
+                        chunk_end_time = min(chunk_end_time, end)
+                        segment_cues.append(SubtitleSegment(
+                            start=chunk_start_time,
+                            end=chunk_end_time,
+                            text="\n".join(spec.lines),
+                            lines=spec.lines,
+                        ))
+                        last_end_time = chunk_end_time
+
+                    if segment_cues:
+                        if segment_cues[-1].end < end - 0.02:
+                            segment_cues[-1].end = min(end, segment_cues[-1].end + 0.02)
+                        out.extend(segment_cues)
+                        continue
+
+            # Fallback to proportional allocation when word timings are unavailable
+            chunks = self._chunk_text(text)
+            if not chunks:
+                continue
+
             if len(chunks) == 1 and sum(len(line) for line in chunks[0]) <= self.max_chars:
                 out.append(SubtitleSegment(
                     start=start, end=end, text="\n".join(chunks[0]), lines=chunks[0]
                 ))
                 continue
 
-            # Allocate time proportionally across chunks by character count
             char_counts = [sum(len(line) for line in c) for c in chunks]
             total_chars = max(1, sum(char_counts))
 
@@ -71,7 +286,6 @@ class SegmentCopySubtitleBuilder:
                 ))
                 t = t_end
 
-            # Ensure last chunk ends exactly at the original end
             if out and out[-1].end < end - 1e-3:
                 out[-1].end = end
 
@@ -152,8 +366,9 @@ def build_subtitles_from_asr_result(
     segments: List[SubtitleSegment]
     if isinstance(data, dict) and "segments" in data:
         seg_json = [s for s in data["segments"] if s and s.get("text")]
+        word_segments = data.get("WordSegments") or data.get("word_segments")
         builder = SegmentCopySubtitleBuilder(mobile_mode=mobile_mode)
-        segments = builder.build_from_segments(seg_json)
+        segments = builder.build_from_segments(seg_json, word_segments)
     elif isinstance(data, list):
         # Assume list of segments in dict form
         seg_json = [s for s in data if s and s.get("text")]
@@ -278,46 +493,84 @@ class SubtitleStyle:
     mobile_font_size: int = 18
     mobile_margin_v: int = 20  # More space on mobile
     
-    def to_ass_style(self, mobile: bool = False) -> str:
-        """Convert to ASS subtitle format style string."""
-        font_size = self.mobile_font_size if mobile else self.font_size
-        margin_v = self.mobile_margin_v if mobile else self.margin_v
-        
-        # ASS alignment codes: 1=left-bottom, 2=center-bottom, 3=right-bottom
-        # 4=left-middle, 5=center-middle, 6=right-middle
-        # 7=left-top, 8=center-top, 9=right-top
-        alignment_map = {
-            "bottom": 2,  # Center bottom
-            "top": 8,     # Center top
-            "center": 5,  # Center middle
+    def scaled_metrics(
+        self,
+        mobile: bool = False,
+        video_width: int = _DEFAULT_DESKTOP_RES[0],
+        video_height: int = _DEFAULT_DESKTOP_RES[1],
+    ) -> dict:
+        font_scale, margin_w_scale = _compute_style_scale(video_width, video_height, mobile)
+
+        base_font = self.mobile_font_size if mobile and self.mobile_font_size else self.font_size
+        if base_font is None or base_font <= 0:
+            base_font = 24
+        font_size = max(10, int(round(base_font * font_scale)))
+
+        base_margin_v = self.mobile_margin_v if mobile else self.margin_v
+        margin_v = max(0, int(round((base_margin_v or 0) * font_scale)))
+        margin_h = max(0, int(round((self.margin_h or 0) * margin_w_scale)))
+
+        outline_base = self.outline_width or 0
+        outline = outline_base * font_scale
+        if outline_base > 0:
+            outline = max(0.5, outline)
+
+        shadow_base = self.shadow_offset or 0
+        shadow = shadow_base * font_scale if shadow_base else 0.0
+
+        return {
+            "font_size": font_size,
+            "margin_v": margin_v,
+            "margin_h": margin_h,
+            "outline": outline,
+            "shadow": shadow,
+            "font_scale": font_scale,
+            "margin_w_scale": margin_w_scale,
         }
-        alignment_code = alignment_map[self.alignment]
-        
-        # Convert colors to ASS format (&HAABBGGRR)
+
+    def to_ass_style(
+        self,
+        mobile: bool = False,
+        video_width: int = _DEFAULT_DESKTOP_RES[0],
+        video_height: int = _DEFAULT_DESKTOP_RES[1],
+    ) -> str:
+        """Convert to ASS subtitle format style string."""
+        metrics = self.scaled_metrics(mobile, video_width, video_height)
+
+        alignment_map = {
+            "bottom": 2,
+            "top": 8,
+            "center": 5,
+        }
+        alignment_code = alignment_map.get(self.alignment, 2)
+
         font_color_ass = self._html_to_ass_color(self.font_color)
         outline_color_ass = self._html_to_ass_color(self.outline_color)
-        
-        # Background color
+
         if self.background_color:
             bg_color_ass = self._html_to_ass_color(self.background_color)
         else:
-            bg_color_ass = "&H00000000"  # Transparent
-        
+            bg_color_ass = "&H00000000"
+
+        outline_str = f"{metrics['outline']:.2f}".rstrip("0").rstrip(".") if metrics["outline"] else "0"
+        shadow_val = metrics["shadow"]
+        shadow_str = f"{shadow_val:.2f}".rstrip("0").rstrip(".") if shadow_val else "0"
+
         return (
             f"FontName={self.font_name},"
-            f"FontSize={font_size},"
+            f"FontSize={metrics['font_size']},"
             f"PrimaryColour={font_color_ass},"
             f"OutlineColour={outline_color_ass},"
             f"BackColour={bg_color_ass},"
             f"Bold={'1' if self.bold else '0'},"
             f"Italic={'1' if self.italic else '0'},"
             f"BorderStyle=1,"
-            f"Outline={self.outline_width},"
-            f"Shadow={self.shadow_offset},"
+            f"Outline={outline_str},"
+            f"Shadow={shadow_str},"
             f"Alignment={alignment_code},"
-            f"MarginL={self.margin_h},"
-            f"MarginR={self.margin_h},"
-            f"MarginV={margin_v}"
+            f"MarginL={metrics['margin_h']},"
+            f"MarginR={metrics['margin_h']},"
+            f"MarginV={metrics['margin_v']}"
         )
     
     def _html_to_ass_color(self, color: str) -> str:
@@ -376,6 +629,8 @@ def convert_srt_to_ass(
         srt_content = f.read()
     
     # Create ASS header
+    style_line = style.to_ass_style(mobile, video_width, video_height)
+
     ass_header = f"""[Script Info]
 Title: Generated Subtitles
 ScriptType: v4.00+
@@ -385,8 +640,8 @@ PlayResY: {video_height}
 ScaledBorderAndShadow: yes
 
 [V4+ Styles]
-Format: Name, {style.to_ass_style(mobile).replace(',', ', ')}
-Style: Default,{style.to_ass_style(mobile)}
+Format: Name, {style_line.replace(',', ', ')}
+Style: Default,{style_line}
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -438,29 +693,41 @@ def _hex_to_ass_colour(rgb_hex: str) -> str:
     r = int(h[0:2], 16); g = int(h[2:4], 16); b = int(h[4:6], 16)
     return f"&H00{b:02X}{g:02X}{r:02X}"
 
-def _style_to_force_style(style: SubtitleStyle, mobile: bool = False) -> str:
+def _style_to_force_style(
+    style: SubtitleStyle,
+    mobile: bool = False,
+    video_width: int = _DEFAULT_DESKTOP_RES[0],
+    video_height: int = _DEFAULT_DESKTOP_RES[1],
+) -> str:
     parts = []
+    metrics = style.scaled_metrics(mobile, video_width, video_height)
+
     if getattr(style, "font_name", None):
         parts.append(f"Fontname={style.font_name}")
-    if getattr(style, "font_size", None):
-        sz = style.mobile_font_size if mobile and getattr(style, "mobile_font_size", None) else style.font_size
-        parts.append(f"Fontsize={int(sz)}")
-    if getattr(style, "font_color", None) and style.font_color.startswith("#"):
-        parts.append(f"PrimaryColour={_hex_to_ass_colour(style.font_color)}")
-    if getattr(style, "outline_color", None) and style.outline_color.startswith("#"):
-        parts.append(f"OutlineColour={_hex_to_ass_colour(style.outline_color)}")
-    if getattr(style, "outline_width", None) is not None:
-        parts.append(f"Outline={int(style.outline_width)}")
-        # A small shadow helps readability when Outline>0
-        if getattr(style, "shadow_offset", None) is not None:
-            parts.append(f"Shadow={int(style.shadow_offset)}")
+    parts.append(f"Fontsize={metrics['font_size']}")
+
+    if getattr(style, "font_color", None):
+        parts.append(f"PrimaryColour={style._html_to_ass_color(style.font_color)}")
+    if getattr(style, "outline_color", None):
+        parts.append(f"OutlineColour={style._html_to_ass_color(style.outline_color)}")
+    if getattr(style, "background_color", None):
+        parts.append(f"BackColour={style._html_to_ass_color(style.background_color)}")
+
+    if metrics["outline"]:
+        parts.append(f"Outline={_format_metric(metrics['outline'])}")
+        if metrics["shadow"]:
+            parts.append(f"Shadow={_format_metric(metrics['shadow'])}")
+    elif metrics["shadow"]:
+        parts.append(f"Shadow={_format_metric(metrics['shadow'])}")
+
     if getattr(style, "bold", None) is not None:
         parts.append(f"Bold={1 if style.bold else 0}")
     if getattr(style, "italic", None) is not None:
         parts.append(f"Italic={1 if style.italic else 0}")
-    mv = style.mobile_margin_v if mobile and getattr(style, "mobile_margin_v", None) else getattr(style, "margin_v", None)
-    if mv is not None:
-        parts.append(f"MarginV={int(mv)}")
+    parts.append(f"MarginV={metrics['margin_v']}")
+    parts.append(f"MarginL={metrics['margin_h']}")
+    parts.append(f"MarginR={metrics['margin_h']}")
+
     # Alignment: ASS codes (2=bottom-center, 8=top-center, 5=middle-center)
     align = getattr(style, "alignment", "bottom")
     if align == "top":
@@ -500,12 +767,12 @@ def burn_subtitles_to_video(
     video = Path(video_path)
     subs = Path(subtitle_path)
     out = Path(output_path)
+    video_width, video_height = probe_video_resolution(video)
     ass_path = _ensure_ass(subs)
 
-    force_style = _style_to_force_style(style, mobile) if style else ""
-    # Build subtitles filter args
-    # subtitles=path[:force_style=...][:fontsdir=...]
-    sub_filter = f"subtitles={shlex.quote(str(ass_path))}"
+    force_style = _style_to_force_style(style, mobile, video_width, video_height) if style else ""
+
+    sub_filter = f"subtitles={shlex.quote(str(ass_path))}:original_size={video_width}x{video_height}"
     if force_style:
         sub_filter += f":force_style='{force_style}'"
     if fonts_dir:
