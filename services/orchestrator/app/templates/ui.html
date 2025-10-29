@@ -220,6 +220,24 @@ body[data-theme="light"] .preview-card {
             gap: 12px;
         }
 
+        .preview-controls {
+            display: flex;
+            justify-content: flex-end;
+        }
+
+        .preview-controls label {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: 500;
+        }
+
+        .preview-controls select {
+            min-width: 150px;
+            border-radius: 10px;
+            padding: 8px 10px;
+        }
+
         .preview-header h2 {
             margin: 0;
             font-size: 1.05rem;
@@ -308,11 +326,64 @@ input[type="url"] {
             animation: none;
         }
 
-        input[type="checkbox"] {
+input[type="checkbox"] {
             width: 18px;
             height: 18px;
             accent-color: #5865F2;
         }
+
+.tag-input {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.04);
+        min-height: 44px;
+    }
+
+    body[data-theme="light"] .tag-input {
+        border-color: rgba(31, 41, 55, 0.15);
+        background: rgba(31, 41, 55, 0.04);
+    }
+
+    .tag-input input {
+        flex: 1;
+        min-width: 140px;
+        border: none;
+        background: transparent;
+        color: inherit;
+        padding: 6px 4px;
+        font-size: 0.95rem;
+        outline: none;
+    }
+
+    .tag-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: rgba(59, 130, 246, 0.18);
+        font-size: 0.85rem;
+        color: inherit;
+    }
+
+    body[data-theme="light"] .tag-badge {
+        background: rgba(59, 130, 246, 0.12);
+    }
+
+    .tag-badge button {
+        border: none;
+        background: none;
+        color: inherit;
+        cursor: pointer;
+        padding: 0;
+        font-size: 1rem;
+        line-height: 1;
+    }
 
         .checkbox-row {
             display: flex;
@@ -503,8 +574,11 @@ input[type="url"] {
                         <input type="text" name="source_lang" list="language-list" placeholder="auto-detect (leave blank)">
                     </label>
                     <label>
-                        Target Language
-                        <input type="text" name="target_lang" list="language-list" placeholder="e.g. fr">
+                        Target Languages
+                        <div class="tag-input" id="target-lang-field">
+                            <div class="tag-input__tags" id="target-lang-tags"></div>
+                            <input type="text" id="target-lang-input" list="language-list" placeholder="Type code and press Enter">
+                        </div>
                     </label>
                 </div>
             </fieldset>
@@ -618,6 +692,14 @@ input[type="url"] {
                     <h2>Result Preview</h2>
                     <span class="preview-status" id="result-preview-text">No output yet.</span>
                 </div>
+                <div class="preview-controls">
+                    <label>
+                        Language
+                        <select id="result-language-select" disabled>
+                            <option value="">No output</option>
+                        </select>
+                    </label>
+                </div>
                 <video id="result-video" controls playsinline></video>
             </div>
         </div>
@@ -634,7 +716,9 @@ const runBtn = document.getElementById("run-btn");
 const interruptBtn = document.getElementById("interrupt-btn");
 const formEl = document.getElementById("dub-form");
 const sourceLangInput = document.querySelector("input[name='source_lang']");
-const targetLangInput = document.querySelector("input[name='target_lang']");
+const targetLangInput = document.getElementById("target-lang-input");
+const targetLangTags = document.getElementById("target-lang-tags");
+const targetLangField = document.getElementById("target-lang-field");
 const videoLinkInput = document.querySelector("input[name='video_url']");
 const fileInput = document.querySelector("input[type='file']");
 const themeToggle = document.getElementById("theme-toggle");
@@ -645,6 +729,7 @@ const sourceVideoEl = document.getElementById("source-video");
 const resultPreviewCard = document.getElementById("result-preview-card");
 const resultPreviewText = document.getElementById("result-preview-text");
 const resultVideoEl = document.getElementById("result-video");
+const resultLanguageSelect = document.getElementById("result-language-select");
 const downloadProgress = document.getElementById("download-progress");
 const downloadBar = document.getElementById("download-bar");
 const downloadLabel = document.getElementById("download-label");
@@ -657,6 +742,8 @@ let ttsModels = [];
 let activeUploadToken = "";
 let currentSourceDescriptor = "";
 let activeRunId = "";
+let selectedTargetLangs = [];
+let latestResultPayload = null;
 
 const languageMap = new Map();
 const languageDisplay = typeof Intl !== "undefined" && Intl.DisplayNames
@@ -710,6 +797,99 @@ function resolveLanguageCode(value) {
         return languageMap.get(key);
     }
     return key;
+}
+
+function refreshModelSelect(select, models, languageCode) {
+    if (!select) return;
+    const previous = select.value;
+    select.innerHTML = "";
+    const autoOption = document.createElement("option");
+    autoOption.value = "auto";
+    autoOption.textContent = "Auto";
+    select.appendChild(autoOption);
+
+    models.forEach(model => {
+        const supportsLanguage =
+            !languageCode ||
+            !(model.languages || []).length ||
+            model.languages.includes(languageCode);
+        if (!supportsLanguage) {
+            return;
+        }
+        const option = document.createElement("option");
+        option.value = model.key;
+        option.textContent = model.key;
+        select.appendChild(option);
+    });
+
+    if ([...select.options].some(opt => opt.value === previous)) {
+        select.value = previous;
+    }
+}
+
+function getPrimaryTargetLang() {
+    if (selectedTargetLangs.length > 0) {
+        return selectedTargetLangs[0];
+    }
+    if (targetLangInput) {
+        return resolveLanguageCode(targetLangInput.value);
+    }
+    return "";
+}
+
+function renderTargetLanguageTags() {
+    if (!targetLangTags) return;
+    targetLangTags.innerHTML = "";
+    selectedTargetLangs.forEach(code => {
+        const display = registerLanguage(code);
+        const badge = document.createElement("span");
+        badge.className = "tag-badge";
+        badge.textContent = display;
+        const removeBtn = document.createElement("button");
+        removeBtn.type = "button";
+        removeBtn.setAttribute("aria-label", `Remove ${display}`);
+        removeBtn.textContent = "×";
+        removeBtn.addEventListener("click", () => {
+            selectedTargetLangs = selectedTargetLangs.filter(item => item !== code);
+            renderTargetLanguageTags();
+            updateModelSelectorsForTarget();
+        });
+        const hidden = document.createElement("input");
+        hidden.type = "hidden";
+        hidden.name = "target_langs";
+        hidden.value = code;
+        badge.appendChild(removeBtn);
+        badge.appendChild(hidden);
+        targetLangTags.appendChild(badge);
+    });
+}
+
+function addTargetLanguage(rawValue) {
+    const code = resolveLanguageCode(rawValue);
+    if (!code) {
+        if (targetLangInput) {
+            targetLangInput.value = "";
+        }
+        return;
+    }
+    const normalized = code.toLowerCase();
+    if (!selectedTargetLangs.includes(normalized)) {
+        selectedTargetLangs.push(normalized);
+        renderTargetLanguageTags();
+        updateModelSelectorsForTarget();
+    }
+    if (targetLangInput) {
+        targetLangInput.value = "";
+    }
+}
+
+function updateModelSelectorsForTarget() {
+    const primary = getPrimaryTargetLang();
+    const sourceCode = resolveLanguageCode(sourceLangInput ? sourceLangInput.value : "");
+    const trSelect = document.getElementById("tr-model");
+    const ttsSelect = document.getElementById("tts-model");
+    refreshModelSelect(trSelect, translationModels, primary || sourceCode);
+    refreshModelSelect(ttsSelect, ttsModels, primary);
 }
 
 function updateSourcePreview(src, label, { keepExisting = false, objectUrl = null } = {}) {
@@ -783,6 +963,53 @@ function updateResultPreview(src, label, { objectUrl = null } = {}) {
     if (objectUrl) {
         resultObjectUrl = objectUrl;
     }
+}
+
+function updateResultPreviewForLanguage(lang) {
+    if (!lang || !latestResultPayload) {
+        updateResultPreview(null, "No output yet.");
+        return;
+    }
+    const languages = latestResultPayload.languages || {};
+    const entry = languages[lang];
+    const label = toLanguageLabel(lang) || lang;
+    if (!entry || !entry.final_video || !entry.final_video.url) {
+        updateResultPreview(null, `No preview for ${label}`);
+        return;
+    }
+    updateResultPreview(entry.final_video.url, `Previewing ${label}`);
+}
+
+function updateResultLanguageSelector(payload) {
+    if (!resultLanguageSelect) return;
+    const languages = Object.keys(payload.languages || {});
+    resultLanguageSelect.innerHTML = "";
+    if (!languages.length) {
+        resultLanguageSelect.disabled = true;
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        const hasDefaultVideo = payload.final_video && payload.final_video.url;
+        placeholder.textContent = hasDefaultVideo ? "Default output" : "No output";
+        resultLanguageSelect.appendChild(placeholder);
+        if (hasDefaultVideo) {
+            updateResultPreview(payload.final_video.url, "Rendered output");
+        } else {
+            updateResultPreview(null, "No output yet.");
+        }
+        return;
+    }
+    languages.forEach(lang => {
+        const option = document.createElement("option");
+        option.value = lang;
+        option.textContent = toLanguageLabel(lang) || lang;
+        resultLanguageSelect.appendChild(option);
+    });
+    const preferred = payload.default_language && languages.includes(payload.default_language)
+        ? payload.default_language
+        : languages[0];
+    resultLanguageSelect.value = preferred;
+    resultLanguageSelect.disabled = false;
+    updateResultPreviewForLanguage(preferred);
 }
 
 function setActiveUploadToken(token = "") {
@@ -877,6 +1104,12 @@ if (themeToggle) {
 
 updateSourcePreview(null, "Waiting for media…");
 updateResultPreview(null, "No output yet.");
+renderTargetLanguageTags();
+if (resultLanguageSelect) {
+    resultLanguageSelect.addEventListener("change", () => {
+        updateResultPreviewForLanguage(resultLanguageSelect.value);
+    });
+}
 
 async function fetchOptions() {
     const resp = await fetch("/ui/options");
@@ -904,38 +1137,11 @@ function populateSelectors(opts) {
         group.forEach(model => (model.languages || []).forEach(lang => codes.add(lang)));
     });
 
-    function refreshModelSelect(select, models, languageCode) {
-        const previous = select.value;
-        select.innerHTML = "";
-        const autoOption = document.createElement("option");
-        autoOption.value = "auto";
-        autoOption.textContent = "Auto";
-        select.appendChild(autoOption);
-
-        models.forEach(model => {
-            const supportsLanguage =
-                !languageCode ||
-                !(model.languages || []).length ||
-                model.languages.includes(languageCode);
-            if (!supportsLanguage) {
-                return;
-            }
-            const option = document.createElement("option");
-            option.value = model.key;
-            option.textContent = model.key;
-            select.appendChild(option);
-        });
-
-        if ([...select.options].some(opt => opt.value === previous)) {
-            select.value = previous;
-        }
-    }
-
-    const initSourceCode = resolveLanguageCode(sourceLangInput.value);
-    const initTargetCode = resolveLanguageCode(targetLangInput.value) || initSourceCode;
+    const initSourceCode = resolveLanguageCode(sourceLangInput ? sourceLangInput.value : "");
+    const initTargetCode = getPrimaryTargetLang() || initSourceCode;
     refreshModelSelect(asrSelect, asrModels, initSourceCode);
     refreshModelSelect(trSelect, translationModels, initTargetCode);
-    refreshModelSelect(ttsSelect, ttsModels, resolveLanguageCode(targetLangInput.value));
+    refreshModelSelect(ttsSelect, ttsModels, initTargetCode);
 
     opts.audio_separation_models.forEach(group => {
         const optGroup = document.createElement("optgroup");
@@ -1005,25 +1211,48 @@ function populateSelectors(opts) {
     }
 
     fillLanguageOptions();
+    updateModelSelectorsForTarget();
 
     function updateLanguageSuggestions(inputEl) {
+        if (!inputEl) return;
         fillLanguageOptions(inputEl.value);
     }
 
-    sourceLangInput.addEventListener("input", () => {
-        updateLanguageSuggestions(sourceLangInput);
-        const sourceCode = resolveLanguageCode(sourceLangInput.value);
-        const targetCode = resolveLanguageCode(targetLangInput.value) || sourceCode;
-        refreshModelSelect(asrSelect, asrModels, sourceCode);
-        refreshModelSelect(trSelect, translationModels, targetCode);
-    });
-    targetLangInput.addEventListener("input", () => {
-        updateLanguageSuggestions(targetLangInput);
-        const targetCode = resolveLanguageCode(targetLangInput.value);
-        const sourceCode = resolveLanguageCode(sourceLangInput.value);
-        refreshModelSelect(trSelect, translationModels, targetCode || sourceCode);
-        refreshModelSelect(ttsSelect, ttsModels, targetCode);
-    });
+    if (sourceLangInput) {
+        sourceLangInput.addEventListener("input", () => {
+            updateLanguageSuggestions(sourceLangInput);
+            const sourceCode = resolveLanguageCode(sourceLangInput.value);
+            refreshModelSelect(asrSelect, asrModels, sourceCode);
+            updateModelSelectorsForTarget();
+        });
+    }
+    if (targetLangInput) {
+        targetLangInput.addEventListener("input", () => {
+            updateLanguageSuggestions(targetLangInput);
+        });
+        targetLangInput.addEventListener("keydown", event => {
+            if (["Enter", "Tab", ","].includes(event.key)) {
+                const pending = targetLangInput.value.trim();
+                if (!pending) {
+                    if (event.key === "Enter" || event.key === ",") {
+                        event.preventDefault();
+                    }
+                    return;
+                }
+                event.preventDefault();
+                addTargetLanguage(pending);
+            } else if (event.key === "Backspace" && !targetLangInput.value && selectedTargetLangs.length) {
+                selectedTargetLangs.pop();
+                renderTargetLanguageTags();
+                updateModelSelectorsForTarget();
+            }
+        });
+        targetLangInput.addEventListener("blur", () => {
+            if (targetLangInput.value.trim()) {
+                addTargetLanguage(targetLangInput.value);
+            }
+        });
+    }
 }
 
 function appendLog(message) {
@@ -1118,30 +1347,66 @@ function renderResults(payload) {
         resultsEl.textContent = "Pipeline finished without a payload.";
         return;
     }
-    const { final_video, final_audio, speech_track, subtitles, models, timings, workspace_id, source_media, source_video } = payload;
+    latestResultPayload = payload;
+    const { languages = {}, default_language: defaultLanguage, final_video, final_audio, speech_track, subtitles, models, timings, workspace_id, source_media, source_video, available_languages: availableLanguages = [] } = payload;
 
     function renderLink(item, label) {
         if (!item || !item.url) return `<li>${label}: unavailable</li>`;
         return `<li>${label}: <a href="${item.url}" target="_blank" rel="noopener">${item.path}</a></li>`;
     }
 
+    function renderLanguageSection(lang, data) {
+        const label = toLanguageLabel(lang) || lang;
+        const entries = [];
+        entries.push(renderLink(data.final_video, "Final video"));
+        entries.push(renderLink(data.final_audio, "Dubbed audio"));
+        entries.push(renderLink(data.speech_track, "Speech track"));
+        const alignedSubs = data.subtitles?.aligned || {};
+        entries.push(renderLink(alignedSubs.srt, "Aligned SRT"));
+        entries.push(renderLink(alignedSubs.vtt, "Aligned VTT"));
+        return `<li><strong>${label}</strong><ul>${entries.join("")}</ul></li>`;
+    }
+
+    const languagesMarkup = Object.entries(languages)
+        .map(([lang, data]) => renderLanguageSection(lang, data))
+        .join("") || "<li>No target languages processed.</li>";
+
+    const modelValue = value => {
+        if (!value) return "n/a";
+        if (typeof value === "string") return value;
+        if (typeof value === "object") {
+            return Object.entries(value)
+                .map(([key, val]) => `${key}: ${val}`)
+                .join(", ") || "n/a";
+        }
+        return String(value);
+    };
+
     resultsEl.innerHTML = `
         <p><strong>Workspace:</strong> ${workspace_id || "n/a"}</p>
         <p><strong>Source:</strong> ${source_media || "n/a"}</p>
-        <p><strong>Models:</strong> ASR=${models?.asr || "n/a"}, Translation=${models?.translation || "n/a"}, TTS=${models?.tts || "n/a"}</p>
+        <p><strong>Default language:</strong> ${defaultLanguage ? `${toLanguageLabel(defaultLanguage) || defaultLanguage} (${defaultLanguage})` : "n/a"}</p>
+        <p><strong>Models:</strong> ASR=${modelValue(models?.asr)}, Translation=${modelValue(models?.translation)}, TTS=${modelValue(models?.tts)}</p>
+        <p><strong>Available languages:</strong> ${availableLanguages.length ? availableLanguages.join(", ") : "n/a"}</p>
         <ul>
             ${renderLink(source_video, "Source video")}
-            ${renderLink(final_video, "Final video")}
-            ${renderLink(final_audio, "Final dubbed audio")}
-            ${renderLink(speech_track, "Speech track")}
+            ${renderLink(final_video, "Default final video")}
+            ${renderLink(final_audio, "Default dubbed audio")}
+            ${renderLink(speech_track, "Default speech track")}
         </ul>
+        <details open>
+            <summary>Per-language outputs</summary>
+            <ul>
+                ${languagesMarkup}
+            </ul>
+        </details>
         <details>
-            <summary>Subtitles</summary>
+            <summary>Subtitles (default)</summary>
             <ul>
                 ${renderLink(subtitles?.original?.srt, "Original SRT")}
                 ${renderLink(subtitles?.original?.vtt, "Original VTT")}
-                ${renderLink(subtitles?.aligned?.srt, "Dubbed SRT")}
-                ${renderLink(subtitles?.aligned?.vtt, "Dubbed VTT")}
+                ${renderLink(subtitles?.aligned?.srt, "Aligned SRT")}
+                ${renderLink(subtitles?.aligned?.vtt, "Aligned VTT")}
             </ul>
         </details>
         <details>
@@ -1151,6 +1416,8 @@ function renderResults(payload) {
             </ul>
         </details>
     `;
+
+    updateResultLanguageSelector(payload);
 }
 
 formEl.addEventListener("submit", async (event) => {
@@ -1169,6 +1436,10 @@ formEl.addEventListener("submit", async (event) => {
         }
         fileInput.value = "";
         hasFile = false;
+    }
+
+    if (targetLangInput && targetLangInput.value.trim()) {
+        addTargetLanguage(targetLangInput.value);
     }
 
     const formData = new FormData(formEl);
@@ -1199,9 +1470,16 @@ formEl.addEventListener("submit", async (event) => {
     }
 
     const resolvedSource = resolveLanguageCode(formData.get("source_lang"));
-    const resolvedTarget = resolveLanguageCode(formData.get("target_lang"));
     formData.set("source_lang", resolvedSource);
-    formData.set("target_lang", resolvedTarget);
+
+    formData.delete("target_langs");
+    selectedTargetLangs.forEach(lang => formData.append("target_langs", lang));
+    const primaryTarget = selectedTargetLangs[0] || "";
+    if (primaryTarget) {
+        formData.set("target_lang", primaryTarget);
+    } else {
+        formData.delete("target_lang");
+    }
 
     formData.set("audio_sep", document.getElementById("audio-sep").checked ? "true" : "false");
     formData.set("perform_vad_trimming", document.getElementById("vad-trim").checked ? "true" : "false");
@@ -1240,6 +1518,13 @@ formEl.addEventListener("submit", async (event) => {
         appendLog("⚠️ Min speakers cannot exceed max speakers.");
         setStatus("Error", "error");
         return;
+    }
+
+    latestResultPayload = null;
+    availableResultLanguages = [];
+    if (resultLanguageSelect) {
+        resultLanguageSelect.innerHTML = '<option value="">Processing…</option>';
+        resultLanguageSelect.disabled = true;
     }
 
     resultsEl.textContent = "Processing current run…";
@@ -1339,9 +1624,6 @@ function handleEvent(event) {
             }
             if (event.result?.source_video?.url) {
                 updateSourcePreview(event.result.source_video.url, "Source (workspace)");
-            }
-            if (event.result?.final_video?.url) {
-                updateResultPreview(event.result.final_video.url, "Rendered output");
             }
             break;
         case "status":

@@ -45,20 +45,15 @@ if __name__ == "__main__":
             del model
 
             # 2. Assign speaker labels
-            diarize_model = DiarizationPipeline(use_auth_token=YOUR_HF_TOKEN, device=device)
+            diarize_model = DiarizationPipeline(model_name=extra.get("diarization_model", None), use_auth_token=YOUR_HF_TOKEN, device=device)
 
             diarize_segments = diarize_model(audio, min_speakers=req.min_speakers, max_speakers=req.max_speakers)
-            
-
-            if not req.allow_short:
-                result_0 = whisperx.assign_word_speakers(diarize_segments, result_0)
 
             # 3. Align whisper output
             model_a, metadata = whisperx.load_align_model(language_code=language, device=device)
             result = whisperx.align(result_0["segments"], model_a, metadata, audio, device, return_char_alignments=False)
 
-            if req.allow_short:
-                result = whisperx.assign_word_speakers(diarize_segments, result)
+            result = whisperx.assign_word_speakers(diarize_segments, result)
 
             # delete model if low on GPU resources
             del audio

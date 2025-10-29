@@ -14,7 +14,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import httpx
 
@@ -26,6 +26,7 @@ from fastapi import File, FastAPI, Form, HTTPException, Query, Request, UploadFi
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
+from fastapi.params import Param
 
 from common_schemas.models import (
     ASRRequest,
@@ -155,6 +156,28 @@ def build_file_payload(path_str: str | Path | None) -> Optional[Dict[str, str]]:
         return None
     query = urllib.parse.quote(str(resolved), safe="")
     return {"path": str(resolved), "url": f"/ui/file?path={query}"}
+
+
+def normalize_language_codes(languages: Iterable[Optional[str]]) -> List[str]:
+    seen = set()
+    normalized: List[str] = []
+    for lang in languages:
+        if not lang:
+            continue
+        candidate = lang.strip().lower()
+        if not candidate:
+            continue
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        normalized.append(candidate)
+    return normalized
+
+
+def unwrap_param(value: Any) -> Any:
+    if isinstance(value, Param):
+        return value.default
+    return value
 
 
 @app.on_event("startup")
@@ -699,7 +722,7 @@ async def finalize_media(
     style: Optional[Any],
     mobile_optimized: bool,
     dubbing_strategy: str,
-    orig_duck: float = 0.2,
+    orig_duck: float = 0.02,
 ) -> None:
     await run_in_thread(
         final,
@@ -798,6 +821,7 @@ if ENABLE_UI:
         video_url: Optional[str] = Form(None),
         target_work: str = Form("dub"),
         target_lang: Optional[str] = Form(None),
+        target_langs: Optional[List[str]] = Form(None),
         source_lang: Optional[str] = Form(None),
         min_speakers: Optional[int] = Form(None),
         max_speakers: Optional[int] = Form(None),
@@ -821,6 +845,8 @@ if ENABLE_UI:
         if target_work not in {"dub", "sub"}:
             target_work = "dub"
         target_lang = (target_lang or "").strip() or None
+        normalized_langs = normalize_language_codes((target_langs or []) + ([target_lang] if target_lang else []))
+        target_lang = normalized_langs[0] if normalized_langs else None
         source_lang = (source_lang or "").strip() or None
         asr_model = (asr_model or "").strip()
         tr_model = (tr_model or "").strip()
@@ -873,6 +899,7 @@ if ENABLE_UI:
                     video_url=str(source_media),
                     target_work=target_work,
                     target_lang=target_lang,
+                    target_langs=normalized_langs,
                     source_lang=source_lang,
                     min_speakers=min_speakers,
                     max_speakers=max_speakers,
@@ -902,6 +929,46 @@ if ENABLE_UI:
                         if local_source.resolve() != cache_target.resolve():
                             shutil.copy2(local_source, cache_target)
                         upload_token = str(cache_target.relative_to(uploads_dir))
+                languages_payload = {}
+                language_outputs = result.get("language_outputs") or {}
+                for lang, data in language_outputs.items():
+                    subtitles_aligned = data.get("subtitles", {}).get("aligned", {})
+                    intermediate_payload = {}
+                    for key, value in (data.get("intermediate_files") or {}).items():
+                        intermediate_payload[key] = build_file_payload(value)
+                    languages_payload[lang] = {
+                        "final_video": build_file_payload(data.get("final_video_path")),
+                        "final_audio": build_file_payload(data.get("final_audio_path")),
+                        "speech_track": build_file_payload(data.get("speech_track")),
+                        "subtitles": {
+                            "aligned": {
+                                "srt": build_file_payload(subtitles_aligned.get("srt")),
+                                "vtt": build_file_payload(subtitles_aligned.get("vtt")),
+                            }
+                        },
+                        "intermediate_files": intermediate_payload,
+                        "models": data.get("models", {}),
+                    }
+
+                def build_subtitle_section(section: Dict[str, Any]) -> Dict[str, Optional[Dict[str, str]]]:
+                    return {
+                        "srt": build_file_payload(section.get("srt")),
+                        "vtt": build_file_payload(section.get("vtt")),
+                    }
+
+                subtitles_result = result.get("subtitles", {}) or {}
+                subtitles_payload = {
+                    "original": build_subtitle_section(subtitles_result.get("original", {})),
+                    "aligned": build_subtitle_section(subtitles_result.get("aligned", {})),
+                }
+                per_language_subtitles = {}
+                for lang, subs in (subtitles_result.get("per_language") or {}).items():
+                    per_language_subtitles[lang] = {
+                        key: build_subtitle_section(values) for key, values in subs.items()
+                    }
+                if per_language_subtitles:
+                    subtitles_payload["per_language"] = per_language_subtitles
+
                 payload = {
                     "type": "result",
                     "result": {
@@ -912,16 +979,10 @@ if ENABLE_UI:
                         "final_video": build_file_payload(result.get("final_video_path")),
                         "final_audio": build_file_payload(result.get("final_audio_path")),
                         "speech_track": build_file_payload(result.get("speech_track")),
-                        "subtitles": {
-                            "original": {
-                                "srt": build_file_payload(result.get("subtitles", {}).get("original", {}).get("srt")),
-                                "vtt": build_file_payload(result.get("subtitles", {}).get("original", {}).get("vtt")),
-                            },
-                            "aligned": {
-                                "srt": build_file_payload(result.get("subtitles", {}).get("aligned", {}).get("srt")),
-                                "vtt": build_file_payload(result.get("subtitles", {}).get("aligned", {}).get("vtt")),
-                            },
-                        },
+                        "subtitles": subtitles_payload,
+                        "default_language": result.get("default_language"),
+                        "available_languages": result.get("available_languages", []),
+                        "languages": languages_payload,
                         "models": result.get("models", {}),
                         "timings": result.get("timings", {}),
                         "upload_token": upload_token,
@@ -1008,6 +1069,7 @@ async def dub(
         description="Target work type, e.g., 'dub': for full dubbing or 'sub': for subtitles only",
     ),
     target_lang: Optional[str] = None,
+    target_langs: Optional[List[str]] = Query(None),
     source_lang: Optional[str] = None,
     min_speakers: Optional[int] = None,
     max_speakers: Optional[int] = None,
@@ -1041,6 +1103,24 @@ async def dub(
     """
     Complete dubbing pipeline orchestrator.
     """
+    target_work = unwrap_param(target_work)
+    target_lang = unwrap_param(target_lang)
+    target_langs = unwrap_param(target_langs)
+    source_lang = unwrap_param(source_lang)
+    min_speakers = unwrap_param(min_speakers)
+    max_speakers = unwrap_param(max_speakers)
+    sep_model = unwrap_param(sep_model)
+    asr_model = unwrap_param(asr_model)
+    tr_model = unwrap_param(tr_model)
+    tts_model = unwrap_param(tts_model)
+    audio_sep = unwrap_param(audio_sep)
+    perform_vad_trimming = unwrap_param(perform_vad_trimming)
+    translation_strategy = unwrap_param(translation_strategy)
+    dubbing_strategy = unwrap_param(dubbing_strategy)
+    sophisticated_dub_timing = unwrap_param(sophisticated_dub_timing)
+    subtitle_style = unwrap_param(subtitle_style)
+    persist_intermediate = unwrap_param(persist_intermediate)
+
     original_source = video_url
     video_url = video_url.strip()
     if target_work == "sub" and subtitle_style is None:
@@ -1048,6 +1128,8 @@ async def dub(
 
     source_lang = (source_lang or "").strip() or None
     target_lang = (target_lang or "").strip() or None
+    target_languages = normalize_language_codes((target_langs or []) + ([target_lang] if target_lang else []))
+    target_lang = target_languages[0] if target_languages else None
 
     sep_model = (sep_model or "").strip()
     if not sep_model or sep_model.lower() == "auto":
@@ -1078,13 +1160,44 @@ async def dub(
         if not found:
             raise HTTPException(500, "No audio separation models available")
 
+    requested_tr_model = tr_model
+    requested_tts_model = tts_model
+
     asr_model = resolve_model_choice(asr_model, ASR_WORKERS, source_lang, fallback="whisperx")
-    tr_model = resolve_model_choice(tr_model, TR_WORKERS, target_lang or source_lang, fallback="facebook_m2m100")
-    tts_model = resolve_model_choice(tts_model, TTS_WORKERS, target_lang, fallback="chatterbox")
+    default_translation_model = resolve_model_choice(
+        requested_tr_model,
+        TR_WORKERS,
+        target_lang or source_lang,
+        fallback="facebook_m2m100",
+    )
+    default_tts_model = resolve_model_choice(
+        requested_tts_model,
+        TTS_WORKERS,
+        target_lang,
+        fallback="chatterbox",
+    )
+
+    translation_models_by_lang: Dict[str, str] = {}
+    tts_models_by_lang: Dict[str, str] = {}
+    per_language_models: Dict[str, Dict[str, str]] = {}
+    for lang in target_languages:
+        translation_models_by_lang[lang] = resolve_model_choice(
+            requested_tr_model,
+            TR_WORKERS,
+            lang or source_lang,
+            fallback=default_translation_model,
+        )
+        tts_models_by_lang[lang] = resolve_model_choice(
+            requested_tts_model,
+            TTS_WORKERS,
+            lang,
+            fallback=default_tts_model,
+        )
+
     selected_models = {
         "asr": asr_model,
-        "translation": tr_model,
-        "tts": tts_model,
+        "translation": translation_models_by_lang or default_translation_model,
+        "tts": tts_models_by_lang or default_tts_model,
         "separation": sep_model,
     }
 
@@ -1098,14 +1211,7 @@ async def dub(
     client = get_http_client()
 
     temp_dirs: List[Path] = []
-    transient_dubbed_path = False
     subtitles_dir: Optional[Path] = None
-    prompt_audio_dir: Optional[Path] = None
-    tts_output_dir: Optional[Path] = None
-    vad_dir: Optional[Path] = None
-    audio_processing_dir: Optional[Path] = None
-    final_output: Optional[Path] = None
-    dubbed_path: Optional[Path] = None
 
     def make_temp_dir(label: str) -> Path:
         path = Path(tempfile.mkdtemp(prefix=f"bluez_{label}_"))
@@ -1173,222 +1279,382 @@ async def dub(
                     mobile_mode=subtitle_style.split("_")[-1] == "mobile",
                 )
 
-        tr_result: Optional[ASRResponse] = None
-        tr_out_path = ""
-        if target_lang is not None:
-            segments_for_translation = (
-                raw_asr_result.model_dump()["segments"]
-                if translation_strategy.split("_")[0] == "long"
-                else aligned_asr_result.model_dump()["segments"]
-            )
-            with step_timer.time("translation"):
-                tr_result = await run_translation_step(
-                    client,
-                    tr_model,
-                    segments_for_translation,
-                    source_lang,
-                    target_lang,
-                )
-            tr_out_path = workspace.maybe_dump_json("translation/translation_result.json", tr_result.model_dump())
-
-        tr_aligned_origin_path = ""
-        if (
-            tr_result
-            and translation_strategy.split("_")[0] == "long"
-            and len(aligned_asr_result.segments) > 1
-            and target_lang is not None
-        ):
-            with step_timer.time("translation_alignment"):
-                tr_result = await align_translation_segments(
-                    tr_result,
-                    raw_asr_result,
-                    aligned_asr_result,
-                    translation_strategy,
-                    target_lang,
-                )
-            tr_aligned_origin_path = workspace.maybe_dump_json(
-                "translation/translation_aligned_W_origin_result.json", tr_result.model_dump()
-            )
-
-        tr_aligned_tts_path = ""
-        tts_out_path = ""
-        speech_track: Optional[Path] = None
-        final_audio_path: Optional[Path] = None
-        translation_segments: Optional[List[Dict[str, Any]]] = None
-        srt_path_1 = srt_path_0
-        vtt_path_1 = vtt_path_0
-
-        if target_work == "sub":
-            if target_lang is not None and tr_result and subtitles_dir:
-                with step_timer.time("subtitles_translation"):
-                    srt_path_1, vtt_path_1 = build_subtitles_from_asr_result(
-                        data=tr_result.model_dump(),
-                        output_dir=subtitles_dir,
-                        custom_name=f"dubbed_{target_lang}",
-                        formats=["srt", "vtt"],
-                        mobile_mode=subtitle_style.split("_")[-1] == "mobile",
-                    )
-        else:
-            if target_lang is None:
-                raise HTTPException(400, "Target language must be specified for dubbing")
-
-            tr_result = tr_result or aligned_asr_result
-            tr_result.audio_url = str(vocals_path) if vocals_path else str(raw_audio_path)
-
-            if workspace.persist_intermediate:
-                prompt_audio_dir = workspace.ensure_dir("prompts")
-            else:
-                prompt_audio_dir = make_temp_dir("prompts")
-
-            with step_timer.time("prompt_attachment"):
-                updated = await run_in_thread(
-                    attach_segment_audio_clips,
-                    asr_dump=tr_result.model_dump(),
-                    output_dir=prompt_audio_dir,
-                    min_duration=9.0,
-                    max_duration=40.0,
-                    one_per_speaker=True,
-                )
-            tr_result = ASRResponse(**updated)
-
-            with step_timer.time("tts"):
-
-                if workspace.persist_intermediate:
-                    tts_output_dir = workspace.ensure_dir("tts")
-                else:
-                    tts_output_dir = make_temp_dir("tts")
-
-                tts_result = await synthesize_tts(client, tts_model, tr_result, target_lang, tts_output_dir)
-            tts_out_path = workspace.maybe_dump_json("tts/tts_result.json", tts_result.model_dump())
-
-            if perform_vad_trimming:
-                with step_timer.time("tts_vad_trim"):
-                    if workspace.persist_intermediate:
-                        vad_dir = workspace.ensure_dir("vad_trimmed")
-                    else:
-                        vad_dir = make_temp_dir("vad_trimmed")
-                    tts_result = await trim_tts_segments(tts_result, vad_dir)
-                workspace.maybe_dump_json("tts/tts_result.json", tts_result.model_dump())
-            else:
-                logger.info("Skipping VAD-based trimming after TTS")
-
-            with step_timer.time("audio_concatenate"):
-                if workspace.persist_intermediate:
-                    audio_processing_dir = workspace.ensure_dir("audio_processing")
-                else:
-                    audio_processing_dir = make_temp_dir("audio_processing")
-
-                speech_track = audio_processing_dir / "dubbed_speech_track.wav"
-                concatenated_path, translation_segments = await concatenate_segments(
-                    tts_result.model_dump()["segments"],
-                    speech_track,
-                    target_duration=get_audio_duration(raw_audio_path),
-                    translation_segments=tr_result.model_dump()["segments"],
-                )
-
-            final_audio_path = Path(concatenated_path)
-            if dubbing_strategy == "full_replacement" and background_path:
-                with step_timer.time("audio_overlay"):
-                    audio_processing_dir = speech_track.parent
-                    final_audio_path = audio_processing_dir / "final_dubbed_audio.wav"
-                    await overlay_segments_on_background(
-                        tts_result.model_dump()["segments"],
-                        background_path=background_path,
-                        output_path=final_audio_path,
-                        sophisticated=sophisticated_dub_timing,
-                        speech_track=speech_track,
-                    )
-            else:
-                logger.info("Using translation-over dubbing strategy")
-
-            if subtitle_style is not None:
-                with step_timer.time("dubbed_alignment"):
-                    aligned_tts = await align_dubbed_audio(
-                        client,
-                        asr_model,
-                        tr_result,
-                        translation_segments,
-                        final_audio_path,
-                    )
-                tr_aligned_tts_path = workspace.maybe_dump_json(
-                    "translation/translation_aligned_W_dubbedvoice_result.json",
-                    aligned_tts.model_dump(),
-                )
-                if subtitles_dir:
-                    srt_path_1, vtt_path_1 = build_subtitles_from_asr_result(
-                        data=aligned_tts.model_dump(),
-                        output_dir=subtitles_dir,
-                        custom_name=f"dubbed_{target_lang}",
-                        formats=["srt", "vtt"],
-                        mobile_mode=subtitle_style.split("_")[-1] == "mobile",
-                    )
-
-        style = (
-            STYLE_PRESETS.get(subtitle_style.split("_")[0], STYLE_PRESETS["default"]) if subtitle_style is not None else None
+        translation_mode = translation_strategy.split("_")[0]
+        segments_for_translation = (
+            raw_asr_result.model_dump()["segments"]
+            if translation_mode == "long"
+            else aligned_asr_result.model_dump()["segments"]
         )
 
-        if target_work != "sub":
-            if workspace.persist_intermediate or subtitle_style is None:
-                dubbed_path = workspace.file_path(f"dubbed_video_{target_lang}.mp4")
-            else:
-                with workspace.temp_file(suffix=".mp4") as tmp:
-                    dubbed_path = Path(tmp.name)
-                transient_dubbed_path = True
-            
-            final_output = (
-                workspace.file_path(f"dubbed_video_{target_lang}_with_{subtitle_style.split('_')[0]}_subs.mp4")
-                if subtitle_style is not None
-                else None
-            )
-        else:
+        languages_to_process = target_languages or ([target_lang] if target_lang else [])
+        default_language = target_lang if target_lang else (languages_to_process[0] if languages_to_process else None)
+
+        subtitles_per_language: Dict[str, Dict[str, Dict[str, str]]] = {}
+        language_payloads: Dict[str, Dict[str, Any]] = {}
+
+        srt_path_1 = srt_path_0
+        vtt_path_1 = vtt_path_0
+        final_video_path = str(resolved_video_path)
+        default_audio_path = ""
+        default_speech_track = ""
+
+        subtitle_style_prefix = subtitle_style.split("_")[0] if subtitle_style is not None else ""
+        subtitle_mobile_mode = subtitle_style.split("_")[-1] == "mobile" if subtitle_style is not None else False
+        style = STYLE_PRESETS.get(subtitle_style_prefix, STYLE_PRESETS["default"]) if subtitle_style is not None else None
+
+        if target_work == "sub":
+            if languages_to_process:
+                for lang in languages_to_process:
+                    with step_timer.time(f"translation[{lang}]"):
+                        tr_result = await run_translation_step(
+                            client,
+                            translation_models_by_lang.get(lang, default_translation_model),
+                            segments_for_translation,
+                            source_lang,
+                            lang,
+                        )
+                    workspace.maybe_dump_json(
+                        f"translation/{lang}/translation_result.json",
+                        tr_result.model_dump(),
+                    )
+
+                    if translation_mode == "long" and len(aligned_asr_result.segments) > 1:
+                        with step_timer.time(f"translation_alignment[{lang}]"):
+                            tr_result = await align_translation_segments(
+                                tr_result,
+                                raw_asr_result,
+                                aligned_asr_result,
+                                translation_strategy,
+                                lang,
+                            )
+                        workspace.maybe_dump_json(
+                            f"translation/{lang}/translation_aligned_W_origin_result.json",
+                            tr_result.model_dump(),
+                        )
+
+                    if subtitle_style is not None and subtitles_dir:
+                        trans_srt, trans_vtt = build_subtitles_from_asr_result(
+                            data=tr_result.model_dump(),
+                            output_dir=subtitles_dir,
+                            custom_name=f"dubbed_{lang}",
+                            formats=["srt", "vtt"],
+                            mobile_mode=subtitle_mobile_mode,
+                        )
+                        subtitles_per_language[lang] = {"aligned": {"srt": trans_srt, "vtt": trans_vtt}}
+
+                if default_language and default_language in subtitles_per_language:
+                    align = subtitles_per_language[default_language]["aligned"]
+                    srt_path_1 = align.get("srt", srt_path_1)
+                    vtt_path_1 = align.get("vtt", vtt_path_1)
+
             dubbed_path = resolved_video_path
             final_output = (
-                workspace.file_path(f"subtitled_video_{target_lang or source_lang}_with_{subtitle_style.split('_')[0]}_subs.mp4")
+                workspace.file_path(f"subtitled_video_{default_language or source_lang}_with_{subtitle_style_prefix}_subs.mp4")
                 if subtitle_style is not None
                 else None
             )
 
-        with step_timer.time("final_pass"):
-            await finalize_media(
-                str(resolved_video_path),
-                final_audio_path,
-                dubbed_path,
-                final_output,
-                Path(vtt_path_1) if vtt_path_1 else None,
-                style,
-                subtitle_style.split("_")[-1] == "mobile" if subtitle_style is not None else False,
-                dubbing_strategy,
-                orig_duck=0.02
-            )
+            with step_timer.time("final_pass"):
+                await finalize_media(
+                    str(resolved_video_path),
+                    None,
+                    dubbed_path,
+                    final_output,
+                    Path(vtt_path_1) if vtt_path_1 else None,
+                    style,
+                    subtitle_mobile_mode,
+                    dubbing_strategy,
+                )
+
+            final_video_path = str(final_output) if final_output else str(dubbed_path)
+        else:
+            if not languages_to_process:
+                raise HTTPException(400, "At least one target language must be specified for dubbing")
+
+            raw_audio_duration = get_audio_duration(raw_audio_path)
+
+            async def process_language(lang: str) -> Tuple[str, Dict[str, Any]]:
+                lang_suffix = f"[{lang}]"
+                translation_model_key = translation_models_by_lang.get(lang, default_translation_model)
+                tts_model_key = tts_models_by_lang.get(lang, default_tts_model)
+                per_language_models[lang] = {"translation": translation_model_key, "tts": tts_model_key}
+
+                with step_timer.time(f"translation{lang_suffix}"):
+                    tr_result = await run_translation_step(
+                        client,
+                        translation_model_key,
+                        segments_for_translation,
+                        source_lang,
+                        lang,
+                    )
+                tr_out_path = workspace.maybe_dump_json(
+                    f"translation/{lang}/translation_result.json",
+                    tr_result.model_dump(),
+                )
+
+                if translation_mode == "long" and len(aligned_asr_result.segments) > 1:
+                    with step_timer.time(f"translation_alignment{lang_suffix}"):
+                        tr_result = await align_translation_segments(
+                            tr_result,
+                            raw_asr_result,
+                            aligned_asr_result,
+                            translation_strategy,
+                            lang,
+                        )
+                    tr_aligned_origin_path = workspace.maybe_dump_json(
+                        f"translation/{lang}/translation_aligned_W_origin_result.json",
+                        tr_result.model_dump(),
+                    )
+                else:
+                    tr_aligned_origin_path = ""
+
+                tr_result.audio_url = str(vocals_path) if vocals_path else str(raw_audio_path) # use vocal if available because it's cleaner for cloning
+
+                if workspace.persist_intermediate:
+                    prompt_audio_dir = workspace.ensure_dir(f"prompts/{lang}")
+                else:
+                    prompt_audio_dir = make_temp_dir(f"prompts_{lang}")
+                with step_timer.time(f"prompt_attachment{lang_suffix}"):
+                    updated = await run_in_thread(
+                        attach_segment_audio_clips,
+                        asr_dump=tr_result.model_dump(),
+                        output_dir=prompt_audio_dir,
+                        min_duration=9.0,
+                        max_duration=40.0,
+                        one_per_speaker=True,
+                    )
+                tr_result_local = ASRResponse(**updated)
+
+                if workspace.persist_intermediate:
+                    tts_output_dir = workspace.ensure_dir(f"tts/{lang}")
+                else:
+                    tts_output_dir = make_temp_dir(f"tts_{lang}")
+                with step_timer.time(f"tts{lang_suffix}"):
+                    tts_result = await synthesize_tts(client, tts_model_key, tr_result_local, lang, tts_output_dir)
+                tts_out_path = workspace.maybe_dump_json(
+                    f"tts/{lang}/tts_result.json",
+                    tts_result.model_dump(),
+                )
+
+                if perform_vad_trimming:
+                    if workspace.persist_intermediate:
+                        vad_dir = workspace.ensure_dir(f"vad_trimmed/{lang}")
+                    else:
+                        vad_dir = make_temp_dir(f"vad_trimmed_{lang}")
+                    with step_timer.time(f"tts_vad_trim{lang_suffix}"):
+                        tts_result = await trim_tts_segments(tts_result, vad_dir)
+                    workspace.maybe_dump_json(
+                        f"tts/{lang}/tts_result.json",
+                        tts_result.model_dump(),
+                    )
+
+                if workspace.persist_intermediate:
+                    audio_processing_dir = workspace.ensure_dir(f"audio_processing/{lang}")
+                else:
+                    audio_processing_dir = make_temp_dir(f"audio_processing_{lang}")
+                speech_track = audio_processing_dir / f"dubbed_speech_track_{lang}.wav"
+                with step_timer.time(f"audio_concatenate{lang_suffix}"):
+                    concatenated_path, translation_segments = await concatenate_segments(
+                        tts_result.model_dump()["segments"],
+                        speech_track,
+                        target_duration=raw_audio_duration,
+                        translation_segments=tr_result_local.model_dump()["segments"],
+                    )
+                final_audio_path = Path(concatenated_path)
+
+                if dubbing_strategy == "full_replacement" and background_path:
+                    with step_timer.time(f"audio_overlay{lang_suffix}"):
+                        final_audio_path = audio_processing_dir / f"final_dubbed_audio_{lang}.wav"
+                        await overlay_segments_on_background(
+                            tts_result.model_dump()["segments"],
+                            background_path=background_path,
+                            output_path=final_audio_path,
+                            sophisticated=sophisticated_dub_timing,
+                            speech_track=speech_track,
+                        )
+                else:
+                    logger.info("Using translation-over dubbing strategy for language %s", lang)
+
+                aligned_srt = ""
+                aligned_vtt = ""
+                if subtitle_style is not None:
+                    with step_timer.time(f"dubbed_alignment{lang_suffix}"):
+                        aligned_tts = await align_dubbed_audio(
+                            client,
+                            asr_model,
+                            tr_result_local,
+                            translation_segments,
+                            final_audio_path,
+                        )
+                    tr_aligned_tts_path = workspace.maybe_dump_json(
+                        f"translation/{lang}/translation_aligned_W_dubbedvoice_result.json",
+                        aligned_tts.model_dump(),
+                    )
+                    if subtitles_dir:
+                        aligned_srt, aligned_vtt = build_subtitles_from_asr_result(
+                            data=aligned_tts.model_dump(),
+                            output_dir=subtitles_dir,
+                            custom_name=f"dubbed_{lang}",
+                            formats=["srt", "vtt"],
+                            mobile_mode=subtitle_mobile_mode,
+                        )
+                else:
+                    tr_aligned_tts_path = ""
+
+                dubbed_path = workspace.file_path(f"dubbed_video_{lang}.mp4")
+                final_output = (
+                    workspace.file_path(f"dubbed_video_{lang}_with_{subtitle_style_prefix}_subs.mp4")
+                    if subtitle_style is not None
+                    else None
+                )
+
+                with step_timer.time(f"final_pass{lang_suffix}"):
+                    await finalize_media(
+                        str(resolved_video_path),
+                        final_audio_path,
+                        dubbed_path,
+                        final_output,
+                        Path(aligned_vtt) if aligned_vtt else None,
+                        style,
+                        subtitle_mobile_mode,
+                        dubbing_strategy,
+                    )
+
+                payload = {
+                    "final_video_path": str(final_output) if final_output else str(dubbed_path),
+                    "final_audio_path": str(final_audio_path) if final_audio_path else "",
+                    "speech_track": str(speech_track),
+                    "subtitles": {"aligned": {"srt": aligned_srt, "vtt": aligned_vtt}},
+                    "intermediate_files": {
+                        "translation": tr_out_path,
+                        "translation_aligned_W_origin": tr_aligned_origin_path,
+                        "translation_aligned_W_dubbedvoice": tr_aligned_tts_path,
+                        "tts": tts_out_path,
+                    },
+                    "models": {"translation": translation_model_key, "tts": tts_model_key},
+                }
+                return lang, payload
+
+            results = await asyncio.gather(*(process_language(lang) for lang in languages_to_process))
+            for lang, payload in results:
+                language_payloads[lang] = payload
+                aligned = payload.get("subtitles", {}).get("aligned", {})
+                if aligned:
+                    subtitles_per_language[lang] = {"aligned": aligned}
+
+            primary_payload = None
+            if default_language and default_language in language_payloads:
+                primary_payload = language_payloads[default_language]
+            elif language_payloads:
+                default_language = next(iter(language_payloads))
+                primary_payload = language_payloads[default_language]
+
+            if primary_payload:
+                final_video_path = primary_payload.get("final_video_path", final_video_path)
+                default_audio_path = primary_payload.get("final_audio_path", "")
+                default_speech_track = primary_payload.get("speech_track", "")
+                aligned = primary_payload.get("subtitles", {}).get("aligned", {})
+                srt_path_1 = aligned.get("srt", srt_path_1)
+                vtt_path_1 = aligned.get("vtt", vtt_path_1)
 
         def keep_if_persistent(path: Optional[str | Path]) -> str:
             if not path:
                 return ""
             return str(path) if workspace.persist_intermediate else ""
 
+        default_audio_path = keep_if_persistent(default_audio_path)
+        default_speech_track = keep_if_persistent(default_speech_track)
+
+        language_outputs_serialized: Dict[str, Dict[str, Any]] = {}
+        for lang, payload in language_payloads.items():
+            aligned = payload.get("subtitles", {}).get("aligned", {})
+            intermediate_serialized = {
+                key: keep_if_persistent(value)
+                for key, value in (payload.get("intermediate_files") or {}).items()
+            }
+            language_outputs_serialized[lang] = {
+                "final_video_path": payload.get("final_video_path", ""),
+                "final_audio_path": keep_if_persistent(payload.get("final_audio_path")),
+                "speech_track": keep_if_persistent(payload.get("speech_track")),
+                "subtitles": {
+                    "aligned": {
+                        "srt": keep_if_persistent(aligned.get("srt")),
+                        "vtt": keep_if_persistent(aligned.get("vtt")),
+                    }
+                },
+                "intermediate_files": intermediate_serialized,
+                "models": payload.get("models", per_language_models.get(lang, {})),
+            }
+
+        for lang, subs in subtitles_per_language.items():
+            aligned = subs.get("aligned", {})
+            existing = language_outputs_serialized.setdefault(
+                lang,
+                {
+                    "final_video_path": final_video_path if default_language == lang else "",
+                    "final_audio_path": "",
+                    "speech_track": "",
+                    "subtitles": {},
+                    "intermediate_files": {},
+                    "models": per_language_models.get(lang, {}),
+                },
+            )
+            existing.setdefault("subtitles", {})
+            existing["subtitles"]["aligned"] = {
+                "srt": keep_if_persistent(aligned.get("srt")),
+                "vtt": keep_if_persistent(aligned.get("vtt")),
+            }
+
+        subtitles_per_language_payload = {
+            lang: data.get("subtitles", {})
+            for lang, data in language_outputs_serialized.items()
+            if data.get("subtitles")
+        }
+
+        if per_language_models:
+            selected_models["per_language"] = per_language_models
+
+        default_intermediate = (language_outputs_serialized.get(default_language) or {}).get("intermediate_files", {})
+
+        intermediate_files_payload: Dict[str, Any] = {
+            "asr_original": keep_if_persistent(asr_raw_path),
+            "asr_aligned": keep_if_persistent(asr_aligned_path),
+            "translation": default_intermediate.get("translation", ""),
+            "translation_aligned_W_origin": default_intermediate.get("translation_aligned_W_origin", ""),
+            "translation_aligned_W_dubbedvoice": default_intermediate.get("translation_aligned_W_dubbedvoice", ""),
+            "tts": default_intermediate.get("tts", ""),
+            "vocals": keep_if_persistent(vocals_path),
+            "background": keep_if_persistent(background_path),
+            "per_language": {
+                lang: data["intermediate_files"] for lang, data in language_outputs_serialized.items()
+            },
+        }
+
+        subtitles_payload: Dict[str, Any] = {
+            "original": {"srt": keep_if_persistent(srt_path_0), "vtt": keep_if_persistent(vtt_path_0)},
+            "aligned": {"srt": keep_if_persistent(srt_path_1), "vtt": keep_if_persistent(vtt_path_1)},
+        }
+        if subtitles_per_language_payload:
+            subtitles_payload["per_language"] = {
+                lang: {"aligned": subs.get("aligned", {})}
+                for lang, subs in subtitles_per_language_payload.items()
+                if subs.get("aligned")
+            }
+
         final_result: Dict[str, Any] = {
             "workspace_id": workspace.workspace_id,
-            "final_video_path": str(final_output) if final_output else str(dubbed_path),
-            "final_audio_path": keep_if_persistent(final_audio_path),
-            "speech_track": keep_if_persistent(speech_track),
+            "final_video_path": final_video_path,
+            "final_audio_path": default_audio_path,
+            "speech_track": default_speech_track,
             "source_media": original_source,
             "source_video": keep_if_persistent(source_media_local_path),
             "source_media_local_path": str(source_media_local_path) if source_media_local_path else "",
+            "default_language": default_language,
+            "available_languages": list(language_outputs_serialized.keys()),
+            "language_outputs": language_outputs_serialized,
             "models": selected_models,
-            "subtitles": {
-                "original": {"srt": keep_if_persistent(srt_path_0), "vtt": keep_if_persistent(vtt_path_0)},
-                "aligned": {"srt": keep_if_persistent(srt_path_1), "vtt": keep_if_persistent(vtt_path_1)},
-            },
-            "intermediate_files": {
-                "asr_original": keep_if_persistent(asr_raw_path),
-                "asr_aligned": keep_if_persistent(asr_aligned_path),
-                "translation": keep_if_persistent(tr_out_path),
-                "translation_aligned_W_origin": keep_if_persistent(tr_aligned_origin_path),
-                "translation_aligned_W_dubbedvoice": keep_if_persistent(tr_aligned_tts_path),
-                "tts": keep_if_persistent(tts_out_path),
-                "vocals": keep_if_persistent(vocals_path),
-                "background": keep_if_persistent(background_path),
-            },
+            "subtitles": subtitles_payload,
+            "intermediate_files": intermediate_files_payload,
             "timings": step_timer.timings,
         }
 
@@ -1408,8 +1674,6 @@ async def dub(
         if not workspace.persist_intermediate:
             for path in temp_dirs:
                 shutil.rmtree(path, ignore_errors=True)
-            if transient_dubbed_path and dubbed_path:
-                dubbed_path.unlink(missing_ok=True)
         if cancelled:
             try:
                 shutil.rmtree(workspace.workspace, ignore_errors=True)

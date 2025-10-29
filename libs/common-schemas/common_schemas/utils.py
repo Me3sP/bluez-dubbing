@@ -442,6 +442,7 @@ class AlignedSegment:
     target_indices: List[int] = field(default_factory=list)
     start: float | None = None
     end: float | None = None
+    speaker_id: str | None = None
 
 class Aligner(ABC):
     """Base utilities shared by alignment strategies."""
@@ -682,6 +683,23 @@ class Aligner(ABC):
                 current_start += seg_duration + src_meta.get(idx + 1)[0] - src_meta.get(idx)[1]
             else:
                 seg.end = source_metadata[-1].get("end")
+
+    def _assign_speakers(
+            self,
+            aligned: List[AlignedSegment],
+            source_metadata: List[dict]
+        ) -> None:
+
+        src_speakers = {
+            idx: seg.get("speaker_id")
+            for idx, seg in enumerate(source_metadata)
+            if "speaker_id" in seg
+        }
+
+        for seg in aligned:
+            speakers = [src_speakers[i] for i in seg.source_segment_indices if i in src_speakers]
+            if speakers:
+                seg.speaker_id = max(set(speakers), key=speakers.count)
 
     @abstractmethod
     def align_segments(self, source_segments: List[str] | None, translated_text: str,
@@ -1112,6 +1130,7 @@ class SophisticatedAligner(Aligner):
         )
         if source_metadata:
             self._assign_timings(segments, tgt_tokens, source_metadata)
+            self._assign_speakers(segments, source_metadata)
         if verbose:
             print(f"✅ Done: {len(segments)} segments\n{'='*70}\n")
         return segments
@@ -1238,6 +1257,7 @@ class ProportionalAligner(Aligner):
         # Assign timestamps
         if source_metadata:
             self._assign_timings(aligned_segments, target_tokens, source_metadata)
+            self._assign_speakers(aligned_segments, source_metadata)
         
         if verbose:
             print(f"✅ Done: {len(aligned_segments)} segments")
@@ -1305,7 +1325,8 @@ def alignerWrapper(input_dict, translation_strategy, target_lang, max_look_dista
             start=seg.start,
             end=seg.end,
             text=seg.translated_text,
-            lang=target_lang
+            lang=target_lang,
+            speaker_id=seg.speaker_id
         )
         Tresponse_segments.segments.append(T_segment)
 

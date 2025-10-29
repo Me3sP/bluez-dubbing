@@ -104,7 +104,7 @@ class SegmentCopySubtitleBuilder:
         mobile_mode: bool = True,
     ):
         if mobile_mode:
-            max_chars_per_line = 30
+            max_chars_per_line = 42
             max_lines = 1  # keep 1 line for readability on mobile
         self.max_chars_per_line = max_chars_per_line
         self.max_lines = max_lines
