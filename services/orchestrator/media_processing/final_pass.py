@@ -9,7 +9,8 @@ def apply_audio_to_video(
     video_path: Path | str,
     audio_path: Path | str,
     output_path: Path | str,
-    dubbing_strategy: str = "default"
+    dubbing_strategy: str = "default",
+    orig_duck: float = 0.2,
 ) -> Path:
     """
     Replace or overlay audio on a video.
@@ -61,7 +62,7 @@ def apply_audio_to_video(
         filter_complex = (
             f"[1:a]apad[padded];"
             f"[padded]atrim=0:{vd:.3f},asetpts=PTS-STARTPTS[voice];"
-            f"[0:a]atrim=0:{vd:.3f},asetpts=PTS-STARTPTS,volume=0.2[orig];"
+            f"[0:a]atrim=0:{vd:.3f},asetpts=PTS-STARTPTS,volume={orig_duck}[orig];"
             f"[orig][voice]amix=inputs=2:weights=1|1:normalize=0,aresample=async=1:first_pts=0[aout]"
         )
 
@@ -95,6 +96,7 @@ def final(
     sub_style: Optional[SubtitleStyle] = None,
     mobile_optimized: bool = False,
     dubbing_strategy: str = "default",
+    orig_duck: float = 0.2,
 ) -> None:
     """
     Replace video's audio stream with dubbed audio or add voice-over, then burn subtitles.
@@ -104,7 +106,8 @@ def final(
             video_path=video_path,
             audio_path=audio_path,
             output_path=dubbed_path,
-            dubbing_strategy=dubbing_strategy
+            dubbing_strategy=dubbing_strategy,
+            orig_duck=orig_duck,
         )
 
     if sub_style is not None and subtitle_path is not None:

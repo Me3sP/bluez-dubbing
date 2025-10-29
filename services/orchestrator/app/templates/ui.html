@@ -145,6 +145,7 @@
             display: grid;
             gap: 18px;
             grid-template-columns: 1fr;
+            justify-items: center;
         }
 
         @media (min-width: 900px) {
@@ -161,6 +162,8 @@
             gap: 14px;
             border: 1px solid rgba(108, 116, 138, 0.3);
             background: rgba(32, 34, 37, 0.6);
+            width: min(100%, 520px);
+            margin: 0 auto;
         }
 
         .download-progress {
@@ -340,6 +343,28 @@ input[type="url"] {
             box-shadow: 0 10px 20px rgba(88, 101, 242, 0.4);
         }
 
+        button.secondary {
+            border: 1px solid rgba(88, 101, 242, 0.4);
+            border-radius: 999px;
+            padding: 12px 22px;
+            font-size: 0.95rem;
+            font-weight: 500;
+            cursor: pointer;
+            background: transparent;
+            color: inherit;
+            transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+        }
+
+        button.secondary:not(:disabled):hover {
+            background: rgba(88, 101, 242, 0.1);
+            color: #7289DA;
+        }
+
+        button.secondary:disabled {
+            opacity: 0.45;
+            cursor: default;
+        }
+
         #log {
             border-radius: 16px;
             padding: 18px;
@@ -383,6 +408,13 @@ input[type="url"] {
             align-items: center;
             gap: 16px;
             flex-wrap: wrap;
+        }
+
+        .actions .button-group {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            align-items: center;
         }
 
         .badge {
@@ -442,6 +474,7 @@ input[type="url"] {
         </div>
 
         <form id="dub-form">
+            <input type="hidden" name="reuse_media_token" id="reuse-media-token">
             <fieldset>
                 <legend>Media</legend>
                 <label>
@@ -527,6 +560,21 @@ input[type="url"] {
             </fieldset>
 
             <fieldset>
+                <legend>Diarization</legend>
+                <div class="flex">
+                    <label>
+                        Min speakers
+                        <input type="number" name="min_speakers" min="1" placeholder="leave blank for auto">
+                    </label>
+                    <label>
+                        Max speakers
+                        <input type="number" name="max_speakers" min="1" placeholder="leave blank for auto">
+                    </label>
+                </div>
+                <p class="hint">Provide speaker count hints when known to improve diarization accuracy.</p>
+            </fieldset>
+
+            <fieldset>
                 <legend>Toggles</legend>
                 <div class="flex">
                     <label class="checkbox-row">
@@ -549,7 +597,10 @@ input[type="url"] {
             </fieldset>
 
             <div class="actions">
-                <button type="submit" id="run-btn" class="primary">Run dubbing pipeline</button>
+                <div class="button-group">
+                    <button type="submit" id="run-btn" class="primary">Run dubbing pipeline</button>
+                    <button type="button" id="interrupt-btn" class="secondary" disabled hidden>Interrupt run</button>
+                </div>
                 <span class="badge" id="status-badge">Idle</span>
             </div>
         </form>
@@ -580,6 +631,7 @@ const logEl = document.getElementById("log");
 const resultsEl = document.getElementById("results");
 const statusBadge = document.getElementById("status-badge");
 const runBtn = document.getElementById("run-btn");
+const interruptBtn = document.getElementById("interrupt-btn");
 const formEl = document.getElementById("dub-form");
 const sourceLangInput = document.querySelector("input[name='source_lang']");
 const targetLangInput = document.querySelector("input[name='target_lang']");
@@ -596,11 +648,15 @@ const resultVideoEl = document.getElementById("result-video");
 const downloadProgress = document.getElementById("download-progress");
 const downloadBar = document.getElementById("download-bar");
 const downloadLabel = document.getElementById("download-label");
+const reuseMediaTokenInput = document.getElementById("reuse-media-token");
 
 let optionsCache = null;
 let asrModels = [];
 let translationModels = [];
 let ttsModels = [];
+let activeUploadToken = "";
+let currentSourceDescriptor = "";
+let activeRunId = "";
 
 const languageMap = new Map();
 const languageDisplay = typeof Intl !== "undefined" && Intl.DisplayNames
@@ -728,6 +784,66 @@ function updateResultPreview(src, label, { objectUrl = null } = {}) {
         resultObjectUrl = objectUrl;
     }
 }
+
+function setActiveUploadToken(token = "") {
+    activeUploadToken = token || "";
+    if (reuseMediaTokenInput) {
+        reuseMediaTokenInput.value = activeUploadToken;
+    }
+}
+
+function showInterruptButton(disabled = true) {
+    if (!interruptBtn) return;
+    interruptBtn.hidden = false;
+    interruptBtn.disabled = !!disabled;
+    interruptBtn.textContent = "Interrupt run";
+}
+
+function hideInterruptButton() {
+    if (!interruptBtn) return;
+    interruptBtn.hidden = true;
+    interruptBtn.disabled = true;
+    interruptBtn.textContent = "Interrupt run";
+}
+
+async function releaseActiveUploadToken() {
+    if (!activeUploadToken) return;
+    const token = activeUploadToken;
+    setActiveUploadToken("");
+    currentSourceDescriptor = "";
+    try {
+        const params = new URLSearchParams({ token });
+        const url = "/ui/release_media";
+        let sent = false;
+        if (navigator.sendBeacon) {
+            const blob = new Blob([params.toString()], { type: "application/x-www-form-urlencoded" });
+            sent = navigator.sendBeacon(url, blob);
+        }
+        if (!sent) {
+            await fetch(url, {
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body: params,
+            });
+        }
+    } catch (err) {
+        console.warn("Failed to release cached media token", err);
+    }
+}
+
+window.addEventListener("beforeunload", () => {
+    if (!activeUploadToken) return;
+    const params = new URLSearchParams({ token: activeUploadToken });
+    const blob = new Blob([params.toString()], { type: "application/x-www-form-urlencoded" });
+    if (!navigator.sendBeacon || !navigator.sendBeacon("/ui/release_media", blob)) {
+        fetch("/ui/release_media", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: params,
+            keepalive: true,
+        }).catch(() => {});
+    }
+});
 
 const THEME_KEY = "bluez-ui-theme";
 const themeIconSpan = themeToggle ? themeToggle.querySelector("span[aria-hidden='true']") : null;
@@ -916,7 +1032,41 @@ function appendLog(message) {
     logEl.scrollTop = logEl.scrollHeight;
 }
 
+if (interruptBtn) {
+    interruptBtn.addEventListener("click", async () => {
+        if (!activeRunId) {
+            appendLog("⚠️ No active run to interrupt.");
+            return;
+        }
+        const previousLabel = interruptBtn.textContent;
+        interruptBtn.disabled = true;
+        interruptBtn.textContent = "Stopping…";
+        try {
+            const body = new URLSearchParams({ run_id: activeRunId });
+            await fetch("/ui/stop", {
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body,
+                keepalive: true,
+            });
+            appendLog("⏹ Cancellation requested." );
+            setStatus("Stopping…", "running");
+        } catch (err) {
+            appendLog(`❌ Failed to interrupt: ${err.message}`);
+            interruptBtn.disabled = false;
+        } finally {
+            interruptBtn.textContent = previousLabel;
+        }
+    });
+}
+
 fileInput.addEventListener("change", () => {
+    if (activeUploadToken) {
+        releaseActiveUploadToken();
+    } else {
+        setActiveUploadToken("");
+        currentSourceDescriptor = "";
+    }
     if (sourceObjectUrl) {
         URL.revokeObjectURL(sourceObjectUrl);
         sourceObjectUrl = null;
@@ -924,13 +1074,24 @@ fileInput.addEventListener("change", () => {
     if (fileInput.files && fileInput.files.length > 0) {
         const blobUrl = URL.createObjectURL(fileInput.files[0]);
         updateSourcePreview(blobUrl, "Local upload", { objectUrl: blobUrl });
+        currentSourceDescriptor = fileInput.files[0].name || "";
     } else if (!videoLinkInput.value.trim()) {
         updateSourcePreview(null, "Waiting for media…");
     }
 });
 
 videoLinkInput.addEventListener("input", () => {
-    if (videoLinkInput.value.trim() && (!fileInput.files || fileInput.files.length === 0)) {
+    const trimmedValue = videoLinkInput.value.trim();
+    if (activeUploadToken && trimmedValue !== currentSourceDescriptor) {
+        releaseActiveUploadToken();
+        currentSourceDescriptor = trimmedValue;
+    } else if (!trimmedValue) {
+        setActiveUploadToken("");
+        currentSourceDescriptor = "";
+    } else {
+        currentSourceDescriptor = trimmedValue;
+    }
+    if (trimmedValue && (!fileInput.files || fileInput.files.length === 0)) {
         updateSourcePreview(null, "Remote media will be downloaded on run…");
         updateDownloadProgress({ active: false, label: "" });
     }
@@ -999,10 +1160,21 @@ formEl.addEventListener("submit", async (event) => {
         return;
     }
 
+    let linkValue = videoLinkInput.value.trim();
+    let hasFile = fileInput.files && fileInput.files.length > 0;
+
+    if (linkValue && hasFile) {
+        if (activeUploadToken) {
+            await releaseActiveUploadToken();
+        }
+        fileInput.value = "";
+        hasFile = false;
+    }
+
     const formData = new FormData(formEl);
-    const hasFile = fileInput.files && fileInput.files.length > 0;
-    const linkValue = videoLinkInput.value.trim();
-    if (!hasFile && !linkValue) {
+    linkValue = videoLinkInput.value.trim();
+    const cachedToken = reuseMediaTokenInput ? reuseMediaTokenInput.value.trim() : "";
+    if (!hasFile && !linkValue && !cachedToken) {
         appendLog("⚠️ Provide a media file or a video link.");
         setStatus("Error", "error");
         return;
@@ -1014,8 +1186,16 @@ formEl.addEventListener("submit", async (event) => {
         formData.delete("video_url");
     }
 
-    if (!hasFile) {
+    if (linkValue) {
         formData.delete("file");
+    } else if (!hasFile) {
+        formData.delete("file");
+    }
+
+    if (cachedToken && !hasFile && !linkValue) {
+        formData.set("reuse_media_token", cachedToken);
+    } else {
+        formData.delete("reuse_media_token");
     }
 
     const resolvedSource = resolveLanguageCode(formData.get("source_lang"));
@@ -1028,6 +1208,43 @@ formEl.addEventListener("submit", async (event) => {
     formData.set("sophisticated_dub_timing", document.getElementById("sophisticated-timing").checked ? "true" : "false");
     formData.set("persist_intermediate", document.getElementById("persist-intermediate").checked ? "true" : "false");
 
+    const normalizeSpeakerField = (field, label) => {
+        const raw = formData.get(field);
+        if (raw === null) {
+            return { value: null, ok: true };
+        }
+        const trimmed = String(raw).trim();
+        if (!trimmed) {
+            formData.delete(field);
+            return { value: null, ok: true };
+        }
+        const parsed = Number(trimmed);
+        if (!Number.isInteger(parsed) || parsed < 1) {
+            appendLog(`⚠️ ${label} must be a positive integer.`);
+            setStatus("Error", "error");
+            return { value: null, ok: false };
+        }
+        formData.set(field, String(parsed));
+        return { value: parsed, ok: true };
+    };
+
+    const minHint = normalizeSpeakerField("min_speakers", "Min speakers");
+    if (!minHint.ok) {
+        return;
+    }
+    const maxHint = normalizeSpeakerField("max_speakers", "Max speakers");
+    if (!maxHint.ok) {
+        return;
+    }
+    if (minHint.value !== null && maxHint.value !== null && minHint.value > maxHint.value) {
+        appendLog("⚠️ Min speakers cannot exceed max speakers.");
+        setStatus("Error", "error");
+        return;
+    }
+
+    resultsEl.textContent = "Processing current run…";
+    activeRunId = "";
+    showInterruptButton(true);
     resetLog();
     logEl.textContent = "Starting pipeline…";
     setStatus("Running", "running");
@@ -1078,12 +1295,21 @@ formEl.addEventListener("submit", async (event) => {
         setStatus("Error", "error");
     } finally {
         runBtn.disabled = false;
+        hideInterruptButton();
+        activeRunId = "";
     }
 });
 
 function handleEvent(event) {
     if (!event || !event.type) return;
     switch (event.type) {
+        case "run_id":
+            activeRunId = event.run_id || "";
+            if (activeRunId) {
+                showInterruptButton(false);
+                appendLog(`🆔 Run started (${activeRunId})`);
+            }
+            break;
         case "step":
             if (event.event === "start") {
                 appendLog(`▶️  ${event.step}…`);
@@ -1091,10 +1317,26 @@ function handleEvent(event) {
                 appendLog(`✅ ${event.step} (${event.duration.toFixed(2)}s)`);
             }
             break;
+        case "cancelled":
+            appendLog("⏹ Run cancelled.");
+            setStatus("Cancelled", "error");
+            resultsEl.textContent = "Run cancelled.";
+            updateResultPreview(null, "Cancelled.");
+            hideInterruptButton();
+            activeRunId = "";
+            break;
         case "result":
             appendLog("🎉 Pipeline completed.");
             setStatus("Done", "success");
             renderResults(event.result);
+            {
+                const token = event.result?.upload_token || "";
+                setActiveUploadToken(token);
+                currentSourceDescriptor = (event.result?.source_media || "").trim();
+                if (token && fileInput) {
+                    fileInput.value = "";
+                }
+            }
             if (event.result?.source_video?.url) {
                 updateSourcePreview(event.result.source_video.url, "Source (workspace)");
             }
@@ -1131,9 +1373,13 @@ function handleEvent(event) {
         case "error":
             appendLog(`❌ Error: ${event.message || "unknown failure"}`);
             setStatus("Error", "error");
+            hideInterruptButton();
+            activeRunId = "";
             break;
         case "complete":
             appendLog("🏁 Stream closed.");
+            hideInterruptButton();
+            activeRunId = "";
             break;
         default:
             appendLog(`ℹ️ ${JSON.stringify(event)}`);

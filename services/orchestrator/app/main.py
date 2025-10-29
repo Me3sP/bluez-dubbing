@@ -83,6 +83,8 @@ PROGRESS_REPORTER: contextvars.ContextVar[Optional[Callable[[Dict[str, Any]], No
     "progress_reporter", default=None
 )
 
+ACTIVE_UI_RUNS: Dict[str, asyncio.Task] = {}
+
 app.mount("/outs", StaticFiles(directory=str(OUTS)), name="outs")
 if ENABLE_UI:
     assets_dir = BASE / "assets"
@@ -90,12 +92,45 @@ if ENABLE_UI:
         app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
         @app.get("/favicon.ico") # added that because the browser requests it automatically, so it to avoid 404 errors
         async def favicon() -> FileResponse:  # type: ignore[override]
-            icon = assets_dir / "icon.png"
-            fallback = assets_dir / "icon2.png"
+            icon = assets_dir / "icon2.png"
+            fallback = assets_dir / "icon.png"
             target = icon if icon.exists() else fallback
             if not target.exists():
                 raise HTTPException(404, "favicon not found")
             return FileResponse(target, media_type="image/png")
+
+
+def resolve_cached_media_token(token: str) -> Path:
+    if not token:
+        raise HTTPException(400, "Cached media token must be provided.")
+    uploads_dir = UPLOADS_DIR
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    uploads_root = uploads_dir.resolve()
+    candidate = (uploads_dir / Path(token)).resolve()
+    try:
+        candidate.relative_to(uploads_root)
+    except ValueError as exc:
+        raise HTTPException(400, "Invalid cached media token.") from exc
+    return candidate
+
+
+def cleanup_cached_media_path(target: Path) -> None:
+    uploads_dir = UPLOADS_DIR.resolve()
+    if not target.exists():
+        return
+    if target.is_file():
+        target.unlink(missing_ok=True)
+    elif target.is_dir():
+        shutil.rmtree(target, ignore_errors=True)
+    current = target.parent
+    while current != uploads_dir and current.exists():
+        try:
+            next(current.iterdir())
+        except StopIteration:
+            current.rmdir()
+            current = current.parent
+        else:
+            break
 
 
 def emit_progress(event: Dict[str, Any]) -> None:
@@ -493,11 +528,15 @@ async def run_asr_step(
     asr_model: str,
     source_lang: Optional[str],
     allow_short: bool,
+    min_speakers: Optional[int],
+    max_speakers: Optional[int],
 ) -> Tuple[ASRResponse, ASRResponse]:
     asr_req = ASRRequest(
         audio_url=str(raw_audio_path),
         language_hint=source_lang if source_lang else None,
         allow_short=allow_short,
+        min_speakers=min_speakers,
+        max_speakers=max_speakers,
     )
     response = await client.post(ASR_URL, params={"model_key": asr_model}, json=asr_req.model_dump())
     if response.status_code != 200:
@@ -660,6 +699,7 @@ async def finalize_media(
     style: Optional[Any],
     mobile_optimized: bool,
     dubbing_strategy: str,
+    orig_duck: float = 0.2,
 ) -> None:
     await run_in_thread(
         final,
@@ -671,6 +711,7 @@ async def finalize_media(
         sub_style=style,
         mobile_optimized=mobile_optimized,
         dubbing_strategy=dubbing_strategy,
+        orig_duck=orig_duck,
     )
 
 
@@ -720,6 +761,36 @@ if ENABLE_UI:
         return FileResponse(resolved)
 
 
+    @app.post("/ui/release_media")
+    async def ui_release_media(token: str = Form(...)) -> JSONResponse:
+        token = (token or "").strip()
+        if not token:
+            return JSONResponse({"status": "ignored"})
+        try:
+            target = resolve_cached_media_token(token)
+        except HTTPException:
+            return JSONResponse({"status": "invalid"}, status_code=200)
+        if target.exists():
+            cleanup_cached_media_path(target)
+            return JSONResponse({"status": "released"})
+        return JSONResponse({"status": "missing"})
+
+
+    @app.post("/ui/stop")
+    async def ui_stop(run_id: str = Form(...)) -> JSONResponse:
+        run_id = (run_id or "").strip()
+        if not run_id:
+            raise HTTPException(400, "run_id is required")
+        task = ACTIVE_UI_RUNS.get(run_id)
+        if task is None:
+            return JSONResponse({"status": "missing"})
+        if task.done():
+            ACTIVE_UI_RUNS.pop(run_id, None)
+            return JSONResponse({"status": "completed"})
+        task.cancel()
+        return JSONResponse({"status": "cancelling"})
+
+
     @app.post("/ui/run")
     async def ui_run(
         request: Request,
@@ -727,7 +798,10 @@ if ENABLE_UI:
         video_url: Optional[str] = Form(None),
         target_work: str = Form("dub"),
         target_lang: Optional[str] = Form(None),
-        source_lang: Optional[str] = Form("en"),
+        source_lang: Optional[str] = Form(None),
+        min_speakers: Optional[int] = Form(None),
+        max_speakers: Optional[int] = Form(None),
+        reuse_media_token: Optional[str] = Form(None),
         asr_model: Optional[str] = Form("auto"),
         tr_model: Optional[str] = Form("auto"),
         tts_model: Optional[str] = Form("auto"),
@@ -755,8 +829,12 @@ if ENABLE_UI:
         translation_strategy = (translation_strategy or "default").strip() or "default"
         dubbing_strategy = (dubbing_strategy or "default").strip() or "default"
         subtitle_style = (subtitle_style or "").strip() or None
+        reuse_media_token = (reuse_media_token or "").strip() or None
+        provided_video_url = (video_url or "").strip() or None
         source_media: Optional[str] = None
         upload_path: Optional[Path] = None
+        upload_token: Optional[str] = None
+        remote_input_used = False
 
         if file and file.filename:
             filename = f"{uuid.uuid4()}_{safe_filename(file.filename)}"
@@ -764,11 +842,20 @@ if ENABLE_UI:
             with upload_path.open("wb") as dest:
                 shutil.copyfileobj(file.file, dest)
             source_media = str(upload_path)
-        elif video_url and video_url.strip():
-            source_media = video_url.strip()
+            upload_token = str(upload_path.relative_to(uploads_dir))
+        elif provided_video_url:
+            source_media = provided_video_url
+            remote_input_used = True
+        elif reuse_media_token:
+            cached_path = resolve_cached_media_token(reuse_media_token)
+            if not cached_path.exists():
+                raise HTTPException(400, "Cached media not found; please re-upload your file.")
+            source_media = str(cached_path)
+            upload_token = str(Path(reuse_media_token))
         else:
             raise HTTPException(400, "Provide either a media file or a video link.")
 
+        run_id = str(uuid.uuid4())
         queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
 
         def report(event: Dict[str, Any]) -> None:
@@ -778,6 +865,8 @@ if ENABLE_UI:
                 logger.debug("Progress queue full; dropping event: %s", event)
 
         async def run_pipeline() -> None:
+            nonlocal upload_token
+            await queue.put({"type": "run_id", "run_id": run_id})
             token = PROGRESS_REPORTER.set(report)
             try:
                 result = await dub(
@@ -785,6 +874,8 @@ if ENABLE_UI:
                     target_work=target_work,
                     target_lang=target_lang,
                     source_lang=source_lang,
+                    min_speakers=min_speakers,
+                    max_speakers=max_speakers,
                     sep_model=sep_model or "",
                     asr_model=asr_model or "",
                     tr_model=tr_model or "",
@@ -797,9 +888,24 @@ if ENABLE_UI:
                     subtitle_style=subtitle_style,
                     persist_intermediate=parse_bool(persist_intermediate),
                 )
+                if not upload_token:
+                    local_source = Path(result.get("source_media_local_path", "") or "")
+                    if local_source.exists():
+                        if remote_input_used:
+                            digest = hashlib.sha1((provided_video_url or str(local_source)).encode("utf-8")).hexdigest()
+                            cache_dir = uploads_dir / "remote" / digest
+                            cache_dir.mkdir(parents=True, exist_ok=True)
+                            cache_target = cache_dir / local_source.name
+                        else:
+                            cache_target = uploads_dir / local_source.name
+                        cache_target.parent.mkdir(parents=True, exist_ok=True)
+                        if local_source.resolve() != cache_target.resolve():
+                            shutil.copy2(local_source, cache_target)
+                        upload_token = str(cache_target.relative_to(uploads_dir))
                 payload = {
                     "type": "result",
                     "result": {
+                        "run_id": run_id,
                         "workspace_id": result.get("workspace_id"),
                         "source_media": result.get("source_media"),
                         "source_video": build_file_payload(result.get("source_video")),
@@ -818,9 +924,14 @@ if ENABLE_UI:
                         },
                         "models": result.get("models", {}),
                         "timings": result.get("timings", {}),
+                        "upload_token": upload_token,
+                        "source_media_local_path": result.get("source_media_local_path"),
                     },
                 }
                 await queue.put(payload)
+            except asyncio.CancelledError:
+                await queue.put({"type": "cancelled", "run_id": run_id})
+                raise
             except HTTPException as exc:
                 await queue.put({"type": "error", "status": exc.status_code, "message": exc.detail})
             except Exception as exc:  # noqa: BLE001
@@ -828,12 +939,11 @@ if ENABLE_UI:
                 await queue.put({"type": "error", "message": str(exc)})
             finally:
                 PROGRESS_REPORTER.reset(token)
-                if upload_path and upload_path.exists():
-                    upload_path.unlink(missing_ok=True)
                 await queue.put({"type": "complete"})
 
         async def event_stream():
             task = asyncio.create_task(run_pipeline())
+            ACTIVE_UI_RUNS[run_id] = task
             try:
                 while True:
                     event = await queue.get()
@@ -841,8 +951,15 @@ if ENABLE_UI:
                     if event.get("type") == "complete":
                         break
             finally:
+                ACTIVE_UI_RUNS.pop(run_id, None)
                 if not task.done():
                     task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    logger.exception("UI pipeline task raised after completion", exc_info=True)
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -860,6 +977,16 @@ else:
 
     @app.get("/ui/file")
     async def ui_file_disabled(path: str) -> FileResponse:  # type: ignore[override]
+        raise HTTPException(404, "UI mode disabled for this orchestrator instance")
+
+
+    @app.post("/ui/release_media")
+    async def ui_release_media_disabled(*_: Any, **__: Any) -> JSONResponse:
+        raise HTTPException(404, "UI mode disabled for this orchestrator instance")
+
+
+    @app.post("/ui/stop")
+    async def ui_stop_disabled(*_: Any, **__: Any) -> JSONResponse:
         raise HTTPException(404, "UI mode disabled for this orchestrator instance")
 
 
@@ -881,7 +1008,9 @@ async def dub(
         description="Target work type, e.g., 'dub': for full dubbing or 'sub': for subtitles only",
     ),
     target_lang: Optional[str] = None,
-    source_lang: Optional[str] = "en",
+    source_lang: Optional[str] = None,
+    min_speakers: Optional[int] = None,
+    max_speakers: Optional[int] = None,
     sep_model: str = Query("melband_roformer_big_beta5e.ckpt"),
     asr_model: str = Query("whisperx"),
     tr_model: str = Query("facebook_m2m100"),
@@ -993,6 +1122,8 @@ async def dub(
 
     raw_audio_path = preprocessing_dir / "raw_audio.wav"
 
+    cancelled = False
+
     try:
         with step_timer.time("extract_audio"):
             await extract_audio_to_workspace(str(resolved_video_path), raw_audio_path)
@@ -1014,7 +1145,7 @@ async def dub(
         allow_short = translation_strategy.split("_")[0] != "long"
         with step_timer.time("asr"):
             raw_asr_result, aligned_asr_result = await run_asr_step(
-                client, raw_audio_path, asr_model, source_lang, allow_short
+                client, raw_audio_path, asr_model, source_lang, allow_short, min_speakers, max_speakers
             )
 
         source_lang = source_lang or raw_asr_result.language
@@ -1227,6 +1358,7 @@ async def dub(
                 style,
                 subtitle_style.split("_")[-1] == "mobile" if subtitle_style is not None else False,
                 dubbing_strategy,
+                orig_duck=0.02
             )
 
         def keep_if_persistent(path: Optional[str | Path]) -> str:
@@ -1241,6 +1373,7 @@ async def dub(
             "speech_track": keep_if_persistent(speech_track),
             "source_media": original_source,
             "source_video": keep_if_persistent(source_media_local_path),
+            "source_media_local_path": str(source_media_local_path) if source_media_local_path else "",
             "models": selected_models,
             "subtitles": {
                 "original": {"srt": keep_if_persistent(srt_path_0), "vtt": keep_if_persistent(vtt_path_0)},
@@ -1263,6 +1396,9 @@ async def dub(
 
         return final_result
 
+    except asyncio.CancelledError:
+        cancelled = True
+        raise
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -1274,3 +1410,8 @@ async def dub(
                 shutil.rmtree(path, ignore_errors=True)
             if transient_dubbed_path and dubbed_path:
                 dubbed_path.unlink(missing_ok=True)
+        if cancelled:
+            try:
+                shutil.rmtree(workspace.workspace, ignore_errors=True)
+            except Exception:  # noqa: BLE001
+                logger.warning("Failed to remove workspace %s after cancellation", workspace.workspace, exc_info=True)

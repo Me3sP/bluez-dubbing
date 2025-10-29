@@ -30,7 +30,7 @@ Bluez-Dubbing is a modular, production-ready pipeline for **automatic video dubb
 ## 🚀 Features
 
 - **End-to-End Dubbing:** From video/audio input to fully dubbed output with burned-in subtitles.
-- **Discord-style Web UI:** Upload a file or paste a YouTube/Instagram/TikTok link, watch download progress (via yt-dlp), and preview source/final videos inline.
+- **Web UI:** Upload a file or paste a YouTube/Instagram/TikTok link, watch download progress (via yt-dlp), and preview source/final videos inline.
 - **Modular Services:** Pluggable ASR, translation, and TTS models—easily extend or swap components.
 - **Audio Source Separation:** Isolate vocals and background for high-quality dubbing.
 - **Flexible Translation Strategies:** Segment-wise or full-text translation with alignment.

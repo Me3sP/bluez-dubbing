@@ -1,3 +1,15 @@
 # main config parameters
 batch_size: 16 # reduce if low on GPU mem
 compute_type: float16
+model_dir_asr: "./model_cache/asr/"
+orig_duck: 0.2 # volume reduction for original audio during dubbing when using the translation over strategy( value assigned in main.py line 1242)
+
+# subtitle parameters
+max_chars_per_line: 42
+max_lines: 2
+min_duration: 0.7
+max_duration: 7.0
+mobile_mode: True
+# if mobile_mode:
+max_chars_per_line : 30
+max_lines : 1

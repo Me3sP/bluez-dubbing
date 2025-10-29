@@ -47,9 +47,8 @@ if __name__ == "__main__":
             # 2. Assign speaker labels
             diarize_model = DiarizationPipeline(use_auth_token=YOUR_HF_TOKEN, device=device)
 
-            # add min/max number of speakers if known
-            diarize_segments = diarize_model(audio)
-            # diarize_model(audio, min_speakers=min_speakers, max_speakers=max_speakers)
+            diarize_segments = diarize_model(audio, min_speakers=req.min_speakers, max_speakers=req.max_speakers)
+            
 
             if not req.allow_short:
                 result_0 = whisperx.assign_word_speakers(diarize_segments, result_0)
