@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
+from pydantic import BaseModel
+
 import httpx
 
 BASE = Path(__file__).resolve().parents[3]
@@ -111,6 +113,7 @@ PROGRESS_REPORTER: contextvars.ContextVar[Optional[Callable[[Dict[str, Any]], No
 )
 
 ACTIVE_JOBS: Dict[str, asyncio.Task] = {}
+TRANSCRIPTION_REVIEW_WAITERS: Dict[str, asyncio.Future[ASRResponse]] = {}
 
 app.mount("/outs", StaticFiles(directory=str(OUTS), check_dir=False), name="outs")
 
@@ -156,6 +159,18 @@ def emit_progress(event: Dict[str, Any]) -> None:
         reporter(event)
     except Exception:  # noqa: BLE001
         logger.debug("Progress reporter failed for %s", event, exc_info=True)
+
+
+async def wait_for_transcription_review(run_id: str) -> ASRResponse:
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[ASRResponse] = loop.create_future()
+    TRANSCRIPTION_REVIEW_WAITERS[run_id] = future
+    try:
+        return await future
+    finally:
+        stored = TRANSCRIPTION_REVIEW_WAITERS.pop(run_id, None)
+        if stored is future and not future.done():
+            future.cancel()
 
 
 def build_file_payload(path_str: str | Path | None) -> Optional[Dict[str, str]]:
@@ -566,7 +581,10 @@ async def run_asr_step(
     source_lang: Optional[str],
     min_speakers: Optional[int],
     max_speakers: Optional[int],
-) -> Tuple[ASRResponse, ASRResponse]:
+    *,
+    perform_alignment: bool = True,
+    diarize: bool = True,
+) -> Tuple[ASRResponse, Optional[ASRResponse]]:
     asr_req = ASRRequest(
         audio_url=str(raw_audio_path),
         language_hint=source_lang if source_lang else None,
@@ -582,25 +600,40 @@ async def run_asr_step(
         raise HTTPException(500, f"ASR transcription failed: {raw_resp.text}")
 
     raw_result = ASRResponse(**raw_resp.json())
+    if not raw_result.audio_url:
+        raw_result.audio_url = str(raw_audio_path)
     raw_result.extra = dict(raw_result.extra or {})
     if min_speakers is not None:
         raw_result.extra["min_speakers"] = min_speakers
     if max_speakers is not None:
         raw_result.extra["max_speakers"] = max_speakers
 
+    if not perform_alignment:
+        return raw_result, None
+
     align_payload = ASRResponse(**raw_result.model_dump())
     align_payload.extra = dict(align_payload.extra or {})
+    align_payload.extra["enable_diarization"] = diarize
 
-    aligned_resp = await client.post(
-        ASR_URL,
-        params={"model_key": asr_model, "runner_index": 1, "diarize": True},
-        json=align_payload.model_dump(),
-    )
-    if aligned_resp.status_code != 200:
-        raise HTTPException(500, f"ASR alignment failed: {aligned_resp.text}")
-
-    aligned_result = ASRResponse(**aligned_resp.json())
+    aligned_result = await align_asr_transcription(client, asr_model, align_payload, diarize=diarize)
     return raw_result, aligned_result
+
+
+async def align_asr_transcription(
+    client: httpx.AsyncClient,
+    asr_model: str,
+    transcription: ASRResponse,
+    diarize: bool,
+) -> ASRResponse:
+    payload = transcription.model_dump()
+    response = await client.post(
+        ASR_URL,
+        params={"model_key": asr_model, "runner_index": 1, "diarize": diarize},
+        json=payload,
+    )
+    if response.status_code != 200:
+        raise HTTPException(500, f"ASR alignment failed: {response.text}")
+    return ASRResponse(**response.json())
 
 
 async def run_translation_step(
@@ -838,6 +871,25 @@ async def pipeline_stop(run_id: str = Form(...)) -> JSONResponse:
     return JSONResponse({"status": "cancelling"})
 
 
+class TranscriptionReviewRequest(BaseModel):
+    run_id: str
+    transcription: ASRResponse
+
+
+@app.post(f"{JOBS_PREFIX}/transcription_review")
+async def pipeline_submit_transcription_review(review: TranscriptionReviewRequest) -> JSONResponse:
+    run_id = (review.run_id or "").strip()
+    if not run_id:
+        raise HTTPException(400, "run_id is required")
+    future = TRANSCRIPTION_REVIEW_WAITERS.get(run_id)
+    if future is None:
+        raise HTTPException(404, "No pending transcription review for this run.")
+    if future.done():
+        raise HTTPException(409, "Transcription review already submitted for this run.")
+    future.set_result(review.transcription)
+    return JSONResponse({"status": "accepted"})
+
+
 @app.post(RUN_ROUTE)
 async def pipeline_run(
         file: UploadFile | None = File(None),
@@ -860,6 +912,7 @@ async def pipeline_run(
         sophisticated_dub_timing: str = Form("true"),
         subtitle_style: Optional[str] = Form(None),
         persist_intermediate: str = Form("false"),
+        involve_mode: str = Form("false"),
     ) -> StreamingResponse:
         uploads_dir = UPLOADS_DIR
         uploads_dir.mkdir(parents=True, exist_ok=True)
@@ -937,6 +990,8 @@ async def pipeline_run(
                     sophisticated_dub_timing=parse_bool(sophisticated_dub_timing),
                     subtitle_style=subtitle_style,
                     persist_intermediate=parse_bool(persist_intermediate),
+                    involve_mode=parse_bool(involve_mode),
+                    run_id=run_id,
                 )
                 if not upload_token:
                     local_source = Path(result.get("source_media_local_path", "") or "")
@@ -1091,6 +1146,14 @@ async def dub(
         True,
         description="Persist intermediate artifacts (disable for lower latency and disk usage)",
     ),
+    involve_mode: bool = Query(
+        False,
+        description="Enable involve-mode workflow with manual transcription review between stages.",
+    ),
+    run_id: Optional[str] = Query(
+        None,
+        description="Optional run identifier when invoked from the job runner (required for involve mode).",
+    ),
 ):
     """
     Complete dubbing pipeline orchestrator.
@@ -1112,6 +1175,11 @@ async def dub(
     sophisticated_dub_timing = unwrap_param(sophisticated_dub_timing)
     subtitle_style = unwrap_param(subtitle_style)
     persist_intermediate = unwrap_param(persist_intermediate)
+    involve_mode = unwrap_param(involve_mode)
+    run_id = unwrap_param(run_id)
+
+    if involve_mode and not run_id:
+        raise HTTPException(400, "Involve mode requires an active run context (run_id).")
 
     original_source = video_url
     video_url = video_url.strip()
@@ -1244,13 +1312,68 @@ async def dub(
 
         with step_timer.time("asr"):
             raw_asr_result, aligned_asr_result = await run_asr_step(
-                client, raw_audio_path, asr_model, source_lang, min_speakers, max_speakers
+                client,
+                raw_audio_path,
+                asr_model,
+                source_lang,
+                min_speakers,
+                max_speakers,
+                perform_alignment=not involve_mode,
             )
 
-        source_lang = source_lang or raw_asr_result.language
+        original_raw_dump = raw_asr_result.model_dump()
+        asr_raw_path = workspace.maybe_dump_json("asr/asr_0_result.json", original_raw_dump)
 
-        asr_raw_path = workspace.maybe_dump_json("asr/asr_0_result.json", raw_asr_result.model_dump())
-        asr_aligned_path = workspace.maybe_dump_json("asr/asr_0_aligned_result.json", aligned_asr_result.model_dump())
+        if involve_mode:
+            emit_progress({
+                "type": "transcription_review",
+                "run_id": run_id,
+                "raw": original_raw_dump,
+                "artifacts": {"raw_path": asr_raw_path},
+            })
+            emit_progress({"type": "status", "event": "awaiting_transcription_review"})
+            reviewed_result = await wait_for_transcription_review(run_id)
+
+            merged_extra = dict(raw_asr_result.extra or {})
+            merged_extra.update(reviewed_result.extra or {})
+            reviewed_result.extra = merged_extra
+            if not reviewed_result.audio_url:
+                reviewed_result.audio_url = raw_asr_result.audio_url or str(raw_audio_path)
+            if not reviewed_result.language:
+                reviewed_result.language = raw_asr_result.language
+            if min_speakers is not None:
+                reviewed_result.extra["min_speakers"] = min_speakers
+            if max_speakers is not None:
+                reviewed_result.extra["max_speakers"] = max_speakers
+
+            raw_asr_result = reviewed_result
+            raw_asr_result.WordSegments = None
+            for segment in raw_asr_result.segments:
+                segment.words = None
+            workspace.maybe_dump_json("asr/asr_0_result.reviewed.json", raw_asr_result.model_dump())
+
+            raw_asr_result.extra = dict(raw_asr_result.extra or {})
+            raw_asr_result.extra.setdefault("enable_diarization", True)
+            aligned_asr_result = await align_asr_transcription(
+                client,
+                asr_model,
+                raw_asr_result,
+                diarize=True,
+            )
+            emit_progress({"type": "transcription_review_complete", "run_id": run_id})
+
+        if involve_mode:
+            source_lang = raw_asr_result.language or source_lang
+        else:
+            source_lang = source_lang or raw_asr_result.language
+
+        if aligned_asr_result is None:
+            raise HTTPException(500, "ASR alignment result missing after transcription stage.")
+
+        asr_aligned_path = workspace.maybe_dump_json(
+            "asr/asr_0_aligned_result.json",
+            aligned_asr_result.model_dump(),
+        )
 
         srt_path_0 = ""
         vtt_path_0 = ""

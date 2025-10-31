@@ -436,6 +436,30 @@ input[type="checkbox"] {
             cursor: default;
         }
 
+        button.mode-toggle {
+            border: 1px dashed rgba(88, 101, 242, 0.5);
+            border-radius: 999px;
+            padding: 12px 20px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            background: transparent;
+            color: inherit;
+            cursor: pointer;
+            transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+        }
+
+        button.mode-toggle.active {
+            background: rgba(88, 101, 242, 0.2);
+            border-style: solid;
+            color: #fff;
+        }
+
+        body[data-theme="light"] button.mode-toggle.active {
+            color: #1f2023;
+            background: rgba(88, 101, 242, 0.25);
+            border-color: rgba(88, 101, 242, 0.45);
+        }
+
         #log {
             border-radius: 16px;
             padding: 18px;
@@ -486,6 +510,86 @@ input[type="checkbox"] {
             gap: 12px;
             flex-wrap: wrap;
             align-items: center;
+        }
+
+        .review-card {
+            margin-top: 24px;
+            border-radius: 18px;
+            padding: 20px 24px;
+            border: 1px solid rgba(123, 132, 155, 0.35);
+            background: rgba(32, 34, 37, 0.65);
+        }
+
+        body[data-theme="light"] .review-card {
+            background: rgba(250, 252, 255, 0.95);
+            border: 1px solid rgba(193, 201, 216, 0.75);
+        }
+
+        .review-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .review-header h2 {
+            margin: 0;
+        }
+
+        .review-status {
+            font-size: 0.9rem;
+            opacity: 0.75;
+        }
+
+        .review-body {
+            display: grid;
+            gap: 16px;
+            margin-top: 16px;
+        }
+
+        .review-instructions {
+            font-size: 0.9rem;
+            opacity: 0.75;
+        }
+
+        .review-segment {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .segment-meta {
+            font-size: 0.85rem;
+            opacity: 0.7;
+        }
+
+        .review-segment textarea {
+            width: 100%;
+            min-height: 70px;
+            border-radius: 12px;
+            border: 1px solid rgba(123, 132, 155, 0.35);
+            background: rgba(0, 0, 0, 0.2);
+            color: inherit;
+            padding: 10px 12px;
+            font-size: 0.95rem;
+            line-height: 1.4;
+            resize: vertical;
+        }
+
+        body[data-theme="light"] .review-segment textarea {
+            background: rgba(255, 255, 255, 0.92);
+            border-color: rgba(193, 201, 216, 0.7);
+        }
+
+        .review-actions {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-top: 18px;
+        }
+
+        .review-actions button {
+            flex: 1 1 200px;
         }
 
         .badge {
@@ -673,6 +777,7 @@ input[type="checkbox"] {
             <div class="actions">
                 <div class="button-group">
                     <button type="submit" id="run-btn" class="primary">Run dubbing pipeline</button>
+                    <button type="button" id="mode-toggle-btn" class="secondary mode-toggle" aria-pressed="false">Involve mode: Off</button>
                     <button type="button" id="interrupt-btn" class="secondary" disabled hidden>Interrupt run</button>
                 </div>
                 <span class="badge" id="status-badge">Idle</span>
@@ -682,6 +787,20 @@ input[type="checkbox"] {
         <div>
             <h2>Live Log</h2>
             <div id="log">Waiting…</div>
+        </div>
+
+        <div class="review-card" id="transcription-review" hidden>
+            <div class="review-header">
+                <h2>Transcription Review</h2>
+                <span class="review-status" id="transcription-review-status">Pipeline paused for transcription review.</span>
+            </div>
+            <div class="review-body" id="transcription-review-body">
+                <p class="review-instructions">Review and adjust each segment before continuing.</p>
+            </div>
+            <div class="review-actions">
+                <button type="button" id="transcription-review-apply" class="primary">Apply corrections &amp; continue</button>
+                <button type="button" id="transcription-review-skip" class="secondary">Continue without changes</button>
+            </div>
         </div>
 
         <div>
@@ -734,6 +853,12 @@ const downloadProgress = document.getElementById("download-progress");
 const downloadBar = document.getElementById("download-bar");
 const downloadLabel = document.getElementById("download-label");
 const reuseMediaTokenInput = document.getElementById("reuse-media-token");
+const involveToggleBtn = document.getElementById("mode-toggle-btn");
+const transcriptionReviewCard = document.getElementById("transcription-review");
+const transcriptionReviewBody = document.getElementById("transcription-review-body");
+const transcriptionReviewStatus = document.getElementById("transcription-review-status");
+const transcriptionReviewApplyBtn = document.getElementById("transcription-review-apply");
+const transcriptionReviewSkipBtn = document.getElementById("transcription-review-skip");
 
 let optionsCache = null;
 let asrModels = [];
@@ -744,6 +869,8 @@ let currentSourceDescriptor = "";
 let activeRunId = "";
 let selectedTargetLangs = [];
 let latestResultPayload = null;
+let involveMode = false;
+let pendingTranscriptionReview = null;
 
 function readStoredBackendBase() {
     try {
@@ -775,6 +902,7 @@ const ROUTES = {
     stop: `${JOBS_BASE}/stop`,
     release: `${JOBS_BASE}/release_media`,
     file: `${JOBS_BASE}/file`,
+    reviewTranscription: `${JOBS_BASE}/transcription_review`,
 };
 
 function resolveBackendUrl(url) {
@@ -954,6 +1082,161 @@ function updateModelSelectorsForTarget() {
     const ttsSelect = document.getElementById("tts-model");
     refreshModelSelect(trSelect, translationModels, primary || sourceCode);
     refreshModelSelect(ttsSelect, ttsModels, primary);
+}
+
+function setInvolveMode(enabled) {
+    involveMode = Boolean(enabled);
+    if (!involveToggleBtn) return;
+    involveToggleBtn.classList.toggle("active", involveMode);
+    involveToggleBtn.setAttribute("aria-pressed", involveMode ? "true" : "false");
+    involveToggleBtn.textContent = involveMode ? "Involve mode: On" : "Involve mode: Off";
+}
+
+function clonePayload(payload) {
+    if (typeof structuredClone === "function") {
+        return structuredClone(payload);
+    }
+    return JSON.parse(JSON.stringify(payload));
+}
+
+function formatTimestamp(value) {
+    if (typeof value !== "number" || Number.isNaN(value)) {
+        return "—";
+    }
+    const total = Math.max(0, value);
+    const minutes = Math.floor(total / 60);
+    const seconds = Math.floor(total % 60);
+    return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+function hideTranscriptionReview() {
+    pendingTranscriptionReview = null;
+    if (transcriptionReviewBody) {
+        transcriptionReviewBody.innerHTML = '<p class="review-instructions">Review and adjust each segment before continuing.</p>';
+    }
+    if (transcriptionReviewStatus) {
+        transcriptionReviewStatus.textContent = "Pipeline paused for transcription review.";
+    }
+    if (transcriptionReviewApplyBtn) {
+        transcriptionReviewApplyBtn.disabled = false;
+    }
+    if (transcriptionReviewSkipBtn) {
+        transcriptionReviewSkipBtn.disabled = false;
+    }
+    if (transcriptionReviewCard) {
+        transcriptionReviewCard.hidden = true;
+    }
+}
+
+function showTranscriptionReview(event) {
+    if (!transcriptionReviewCard || !transcriptionReviewBody) {
+        return;
+    }
+    const rawPayload = event?.raw || {};
+    pendingTranscriptionReview = {
+        runId: event?.run_id || "",
+        payload: clonePayload(rawPayload),
+    };
+
+    transcriptionReviewBody.innerHTML = "";
+    const intro = document.createElement("p");
+    intro.className = "review-instructions";
+    intro.textContent = "Edit any segment text below, then continue.";
+    transcriptionReviewBody.appendChild(intro);
+
+    const segments = Array.isArray(rawPayload.segments) ? rawPayload.segments : [];
+    if (!segments.length) {
+        const emptyNote = document.createElement("p");
+        emptyNote.className = "review-instructions";
+        emptyNote.textContent = "No segments returned by the transcription step.";
+        transcriptionReviewBody.appendChild(emptyNote);
+    } else {
+        segments.forEach((segment, index) => {
+            const wrapper = document.createElement("div");
+            wrapper.className = "review-segment";
+
+            const meta = document.createElement("div");
+            meta.className = "segment-meta";
+            meta.textContent = `Segment ${index + 1} (${formatTimestamp(segment.start)} – ${formatTimestamp(segment.end)})`;
+
+            const textarea = document.createElement("textarea");
+            textarea.value = segment?.text || "";
+            textarea.dataset.index = String(index);
+
+            wrapper.appendChild(meta);
+            wrapper.appendChild(textarea);
+            transcriptionReviewBody.appendChild(wrapper);
+        });
+    }
+
+    if (transcriptionReviewStatus) {
+        transcriptionReviewStatus.textContent = "Pipeline paused for transcription review.";
+    }
+    if (transcriptionReviewApplyBtn) {
+        transcriptionReviewApplyBtn.disabled = false;
+    }
+    if (transcriptionReviewSkipBtn) {
+        transcriptionReviewSkipBtn.disabled = false;
+    }
+    transcriptionReviewCard.hidden = false;
+    transcriptionReviewCard.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+async function submitTranscriptionReview(applyChanges) {
+    if (!pendingTranscriptionReview) {
+        return false;
+    }
+    const { runId, payload } = pendingTranscriptionReview;
+    if (!runId) {
+        return false;
+    }
+
+    const submission = clonePayload(payload);
+    if (applyChanges && transcriptionReviewBody && Array.isArray(submission.segments)) {
+        transcriptionReviewBody.querySelectorAll("textarea[data-index]").forEach(textarea => {
+            const idx = Number(textarea.dataset.index);
+            if (Number.isInteger(idx) && submission.segments[idx]) {
+                submission.segments[idx].text = textarea.value.trim();
+            }
+        });
+    }
+
+    if (transcriptionReviewApplyBtn) {
+        transcriptionReviewApplyBtn.disabled = true;
+    }
+    if (transcriptionReviewSkipBtn) {
+        transcriptionReviewSkipBtn.disabled = true;
+    }
+    if (transcriptionReviewStatus) {
+        transcriptionReviewStatus.textContent = "Submitting review…";
+    }
+
+    try {
+        const response = await fetch(ROUTES.reviewTranscription, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ run_id: runId, transcription: submission }),
+        });
+        if (!response.ok) {
+            throw new Error(`Server responded with ${response.status}`);
+        }
+        appendLog(applyChanges ? "📝 Submitted transcription corrections." : "👍 Approved transcription without changes.");
+        hideTranscriptionReview();
+        setStatus("Running", "running");
+        return true;
+    } catch (err) {
+        if (transcriptionReviewStatus) {
+            transcriptionReviewStatus.textContent = `Failed to submit review: ${err.message}`;
+        }
+        if (transcriptionReviewApplyBtn) {
+            transcriptionReviewApplyBtn.disabled = false;
+        }
+        if (transcriptionReviewSkipBtn) {
+            transcriptionReviewSkipBtn.disabled = false;
+        }
+        appendLog(`❌ Failed to submit transcription review: ${err.message}`);
+        return false;
+    }
 }
 
 function updateSourcePreview(src, label, { keepExisting = false, objectUrl = null } = {}) {
@@ -1165,6 +1448,30 @@ if (themeToggle) {
     document.body.dataset.theme = "dark";
     document.body.style.colorScheme = "dark";
 }
+
+if (involveToggleBtn) {
+    setInvolveMode(false);
+    involveToggleBtn.addEventListener("click", () => {
+        setInvolveMode(!involveMode);
+        appendLog(involveMode
+            ? "🛠 Involve mode enabled. The pipeline will pause for transcription review."
+            : "🏃 Involve mode disabled. The pipeline will run uninterrupted.");
+    });
+}
+
+if (transcriptionReviewApplyBtn) {
+    transcriptionReviewApplyBtn.addEventListener("click", () => {
+        submitTranscriptionReview(true);
+    });
+}
+
+if (transcriptionReviewSkipBtn) {
+    transcriptionReviewSkipBtn.addEventListener("click", () => {
+        submitTranscriptionReview(false);
+    });
+}
+
+hideTranscriptionReview();
 
 updateSourcePreview(null, "Waiting for media…");
 updateResultPreview(null, "No output yet.");
@@ -1399,7 +1706,8 @@ function setStatus(text, tone = "idle") {
         idle: "rgba(59, 130, 246, 0.18)",
         running: "rgba(52, 211, 153, 0.2)",
         success: "rgba(34, 197, 94, 0.25)",
-        error: "rgba(239, 68, 68, 0.25)"
+        error: "rgba(239, 68, 68, 0.25)",
+        paused: "rgba(245, 158, 11, 0.25)",
     };
     statusBadge.style.background = palette[tone] || palette.idle;
     statusBadge.style.borderColor = palette[tone] || palette.idle;
@@ -1492,6 +1800,8 @@ formEl.addEventListener("submit", async (event) => {
         return;
     }
 
+    hideTranscriptionReview();
+
     let linkValue = videoLinkInput.value.trim();
     let hasFile = fileInput.files && fileInput.files.length > 0;
 
@@ -1550,6 +1860,7 @@ formEl.addEventListener("submit", async (event) => {
     formData.set("perform_vad_trimming", document.getElementById("vad-trim").checked ? "true" : "false");
     formData.set("sophisticated_dub_timing", document.getElementById("sophisticated-timing").checked ? "true" : "false");
     formData.set("persist_intermediate", document.getElementById("persist-intermediate").checked ? "true" : "false");
+    formData.set("involve_mode", involveMode ? "true" : "false");
 
     const normalizeSpeakerField = (field, label) => {
         const raw = formData.get(field);
@@ -1672,12 +1983,14 @@ function handleEvent(event) {
             setStatus("Cancelled", "error");
             resultsEl.textContent = "Run cancelled.";
             updateResultPreview(null, "Cancelled.");
+            hideTranscriptionReview();
             hideInterruptButton();
             activeRunId = "";
             break;
         case "result":
             appendLog("🎉 Pipeline completed.");
             setStatus("Done", "success");
+            hideTranscriptionReview();
             renderResults(event.result);
             {
                 const token = event.result?.upload_token || "";
@@ -1711,6 +2024,16 @@ function handleEvent(event) {
                 appendLog(`ℹ️ ${event.event || "status"}`);
             }
             break;
+        case "transcription_review":
+            appendLog("✍️ Awaiting transcription review.");
+            setStatus("Awaiting review", "paused");
+            showTranscriptionReview(event);
+            break;
+        case "transcription_review_complete":
+            appendLog("✅ Transcription review submitted. Resuming pipeline.");
+            setStatus("Running", "running");
+            hideTranscriptionReview();
+            break;
         case "source_preview":
             if (event.preview && event.preview.url) {
                 updateSourcePreview(event.preview.url, "Source ready");
@@ -1720,12 +2043,14 @@ function handleEvent(event) {
         case "error":
             appendLog(`❌ Error: ${event.message || "unknown failure"}`);
             setStatus("Error", "error");
+            hideTranscriptionReview();
             hideInterruptButton();
             activeRunId = "";
             break;
         case "complete":
             appendLog("🏁 Stream closed.");
             hideInterruptButton();
+            hideTranscriptionReview();
             activeRunId = "";
             break;
         default:
