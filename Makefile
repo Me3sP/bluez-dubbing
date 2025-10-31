@@ -5,6 +5,7 @@ BACKEND_ROOT := $(ROOT)/apps/backend
 PYTHONPATH_BASE := $(BACKEND_ROOT):$(ROOT)
 UV ?= uv
 RELOAD ?= --reload
+UI_PORT ?= 5173
 
 define start_service
 	@echo "▶ starting $(1) service on port $(2)"
@@ -27,13 +28,15 @@ start-api:
 	@$(MAKE) stack-up
 
 start-ui:
+	@$(MAKE) stack-up
 	@echo "Starting Bluez dubbing UI…"
-	@cd apps/frontend/public && uv run python -m http.server 5173 &
-	@echo "UI running at http://localhost:5173"
+	@cd apps/frontend/public && uv run python -m http.server $(UI_PORT) &
+	@echo "UI running at http://localhost:$(UI_PORT)"
 
 stop dev-down:
 	@echo "Stopping Bluez dubbing stack…"
 	@-pkill -f "uvicorn app.main:app" || true
+	@-pkill -f "http.server $(UI_PORT)" || true
 	@sleep 1
 	$(call stop_port,8000)
 	$(call stop_port,8001)
