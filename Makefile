@@ -1,13 +1,14 @@
 .PHONY: start-ui start-api stack-up stop restart check-ports test dev dev-up dev-down dev-restart
 
 ROOT := $(CURDIR)
+BACKEND_ROOT := $(ROOT)/apps/backend
+PYTHONPATH_BASE := $(BACKEND_ROOT):$(ROOT)
 UV ?= uv
 RELOAD ?= --reload
-ORCH_UI ?= 1
 
 define start_service
 	@echo "▶ starting $(1) service on port $(2)"
-	@cd services/$(1) && $(strip $(3)) PYTHONPATH=$(ROOT) $(UV) run uvicorn app.main:app $(RELOAD) --host 0.0.0.0 --port $(2) &
+	@cd apps/backend/services/$(1) && $(strip $(3)) PYTHONPATH=$(PYTHONPATH_BASE) $(UV) run uvicorn app.main:app $(RELOAD) --host 0.0.0.0 --port $(2) &
 endef
 
 define stop_port
@@ -19,18 +20,16 @@ stack-up:
 	$(call start_service,asr,8001,)
 	$(call start_service,translation,8002,)
 	$(call start_service,tts,8003,)
-	$(call start_service,orchestrator,8000,ORCHESTRATOR_ENABLE_UI=$(ORCH_UI))
-	@if [ "$(ORCH_UI)" = "1" ]; then \
-		echo "All services running. Orchestrator UI ⇒ http://localhost:8000/ui"; \
-	else \
-		echo "All services running. Call the orchestrator API via http://localhost:8000/v1/dub"; \
-	fi
-
-start-ui:
-	@$(MAKE) ORCH_UI=1 stack-up
+	$(call start_service,orchestrator,8000,)
+	@echo "All backend services running. REST API ⇒ http://localhost:8000/api"
 
 start-api:
-	@$(MAKE) ORCH_UI=0 stack-up
+	@$(MAKE) stack-up
+
+start-ui:
+	@echo "Starting Bluez dubbing UI…"
+	@cd apps/frontend/public && uv run python -m http.server 5173 &
+	@echo "UI running at http://localhost:5173"
 
 stop dev-down:
 	@echo "Stopping Bluez dubbing stack…"
@@ -60,7 +59,7 @@ check-ports:
 	@-lsof -i :8003 || echo "  Available"
 
 test:
-	cd services/asr && $(UV) run --with pytest pytest
-	cd services/translation && $(UV) run --with pytest pytest
-	cd services/tts && $(UV) run --with pytest pytest
-	cd services/orchestrator && $(UV) run --with pytest --with pytest-asyncio pytest
+	cd apps/backend/services/asr && $(UV) run --with pytest pytest
+	cd apps/backend/services/translation && $(UV) run --with pytest pytest
+	cd apps/backend/services/tts && $(UV) run --with pytest pytest
+	cd apps/backend/services/orchestrator && $(UV) run --with pytest --with pytest-asyncio pytest

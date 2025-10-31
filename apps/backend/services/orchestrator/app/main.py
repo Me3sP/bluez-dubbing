@@ -22,10 +22,10 @@ BASE = Path(__file__).resolve().parents[3]
 if str(BASE) not in sys.path:
     sys.path.insert(0, str(BASE))
 
-from fastapi import File, FastAPI, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
-from fastapi.templating import Jinja2Templates
+from fastapi import File, FastAPI, Form, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.params import Param
 
 from common_schemas.models import (
@@ -60,14 +60,40 @@ from services.asr.app.registry import WORKERS as ASR_WORKERS
 from services.translation.app.registry import WORKERS as TR_WORKERS
 from services.tts.app.registry import WORKERS as TTS_WORKERS
 
-ENABLE_UI = os.getenv("ORCHESTRATOR_ENABLE_UI", "1").lower() not in {"0", "false", "no", "off"}
-
 logger = logging.getLogger("bluez.orchestrator")
 if not logger.handlers:
     logging.basicConfig(level=logging.INFO)
 
+def _normalize_prefix(raw: str | None, default: str) -> str:
+    value = (raw or "").strip() or default
+    if not value.startswith("/"):
+        value = f"/{value}"
+    return value.rstrip("/") or default
+
+
+API_PREFIX = _normalize_prefix(os.getenv("ORCHESTRATOR_API_PREFIX"), "/api")
+JOBS_PREFIX = f"{API_PREFIX}/jobs"
+FILE_ROUTE = f"{JOBS_PREFIX}/file"
+RELEASE_ROUTE = f"{JOBS_PREFIX}/release_media"
+STOP_ROUTE = f"{JOBS_PREFIX}/stop"
+RUN_ROUTE = f"{JOBS_PREFIX}/run"
+OPTIONS_ROUTE = f"{API_PREFIX}/options"
+
 app = FastAPI(title="orchestrator")
-templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates")) if ENABLE_UI else None
+
+allowed_origins_raw = os.getenv("ORCHESTRATOR_ALLOWED_ORIGINS", "*").strip()
+if allowed_origins_raw == "*":
+    allowed_origins = ["*"]
+else:
+    allowed_origins = [origin.strip() for origin in allowed_origins_raw.split(",") if origin.strip()]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 ASR_URL = os.getenv("ASR_URL", "http://localhost:8001/v1/transcribe")
 TR_URL = os.getenv("TR_URL", "http://localhost:8002/v1/translate")
@@ -75,7 +101,7 @@ TTS_URL = os.getenv("TTS_URL", "http://localhost:8003/v1/synthesize")
 
 OUTS = BASE / "outs"
 SEPARATION_CACHE = BASE / "cache" / "audio_separation"
-UPLOADS_DIR = BASE / "ui_uploads"
+UPLOADS_DIR = BASE / "uploads"
 
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv")
 AUDIO_EXTENSIONS = (".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac")
@@ -84,21 +110,9 @@ PROGRESS_REPORTER: contextvars.ContextVar[Optional[Callable[[Dict[str, Any]], No
     "progress_reporter", default=None
 )
 
-ACTIVE_UI_RUNS: Dict[str, asyncio.Task] = {}
+ACTIVE_JOBS: Dict[str, asyncio.Task] = {}
 
 app.mount("/outs", StaticFiles(directory=str(OUTS), check_dir=False), name="outs")
-if ENABLE_UI:
-    assets_dir = BASE / "assets"
-    if assets_dir.exists():
-        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
-        @app.get("/favicon.ico") # added that because the browser requests it automatically, so it to avoid 404 errors
-        async def favicon() -> FileResponse:  # type: ignore[override]
-            icon = assets_dir / "icon2.png"
-            fallback = assets_dir / "icon.png"
-            target = icon if icon.exists() else fallback
-            if not target.exists():
-                raise HTTPException(404, "favicon not found")
-            return FileResponse(target, media_type="image/png")
 
 
 def resolve_cached_media_token(token: str) -> Path:
@@ -155,7 +169,7 @@ def build_file_payload(path_str: str | Path | None) -> Optional[Dict[str, str]]:
     except ValueError:
         return None
     query = urllib.parse.quote(str(resolved), safe="")
-    return {"path": str(resolved), "url": f"/ui/file?path={query}"}
+    return {"path": str(resolved), "url": f"{FILE_ROUTE}?path={query}"}
 
 
 def normalize_language_codes(languages: Iterable[Optional[str]]) -> List[str]:
@@ -749,74 +763,66 @@ def safe_filename(name: str) -> str:
     return stem.replace(" ", "_") or "upload"
 
 
-if ENABLE_UI:
-
-    @app.get("/ui", response_class=HTMLResponse)
-    async def ui_home(request: Request) -> HTMLResponse:
-        return templates.TemplateResponse("ui.html", {"request": request})
-
-
-    @app.get("/ui/options")
-    async def ui_options() -> JSONResponse:
-        return JSONResponse(
-            {
-                "asr_models": list_worker_models(ASR_WORKERS),
-                "translation_models": list_worker_models(TR_WORKERS),
-                "tts_models": list_worker_models(TTS_WORKERS),
-                "audio_separation_models": list_audio_separation_models(),
-                "translation_strategies": TRANSLATION_STRATEGIES,
-                "dubbing_strategies": DUBBING_STRATEGIES,
-                "subtitle_styles": sorted(STYLE_PRESETS.keys()),
-            }
-        )
+@app.get(OPTIONS_ROUTE)
+async def pipeline_options() -> JSONResponse:
+    return JSONResponse(
+        {
+            "asr_models": list_worker_models(ASR_WORKERS),
+            "translation_models": list_worker_models(TR_WORKERS),
+            "tts_models": list_worker_models(TTS_WORKERS),
+            "audio_separation_models": list_audio_separation_models(),
+            "translation_strategies": TRANSLATION_STRATEGIES,
+            "dubbing_strategies": DUBBING_STRATEGIES,
+            "subtitle_styles": sorted(STYLE_PRESETS.keys()),
+        }
+    )
 
 
-    @app.get("/ui/file")
-    async def ui_file(path: str) -> FileResponse:
-        resolved = Path(path).resolve()
-        try:
-            resolved.relative_to(OUTS)
-        except ValueError as exc:
-            raise HTTPException(403, "Invalid path") from exc
+@app.get(FILE_ROUTE)
+async def pipeline_file(path: str) -> FileResponse:
+    resolved = Path(path).resolve()
+    try:
+        resolved.relative_to(OUTS)
+    except ValueError as exc:
+        raise HTTPException(403, "Invalid path") from exc
 
-        if not resolved.exists() or not resolved.is_file():
-            raise HTTPException(404, "File not found")
-        return FileResponse(resolved)
+    if not resolved.exists() or not resolved.is_file():
+        raise HTTPException(404, "File not found")
+    return FileResponse(resolved)
 
 
-    @app.post("/ui/release_media")
-    async def ui_release_media(token: str = Form(...)) -> JSONResponse:
-        token = (token or "").strip()
-        if not token:
-            return JSONResponse({"status": "ignored"})
-        try:
-            target = resolve_cached_media_token(token)
-        except HTTPException:
-            return JSONResponse({"status": "invalid"}, status_code=200)
-        if target.exists():
-            cleanup_cached_media_path(target)
-            return JSONResponse({"status": "released"})
+@app.post(RELEASE_ROUTE)
+async def pipeline_release_media(token: str = Form(...)) -> JSONResponse:
+    token = (token or "").strip()
+    if not token:
+        return JSONResponse({"status": "ignored"})
+    try:
+        target = resolve_cached_media_token(token)
+    except HTTPException:
+        return JSONResponse({"status": "invalid"}, status_code=200)
+    if target.exists():
+        cleanup_cached_media_path(target)
+        return JSONResponse({"status": "released"})
+    return JSONResponse({"status": "missing"})
+
+
+@app.post(STOP_ROUTE)
+async def pipeline_stop(run_id: str = Form(...)) -> JSONResponse:
+    run_id = (run_id or "").strip()
+    if not run_id:
+        raise HTTPException(400, "run_id is required")
+    task = ACTIVE_JOBS.get(run_id)
+    if task is None:
         return JSONResponse({"status": "missing"})
+    if task.done():
+        ACTIVE_JOBS.pop(run_id, None)
+        return JSONResponse({"status": "completed"})
+    task.cancel()
+    return JSONResponse({"status": "cancelling"})
 
 
-    @app.post("/ui/stop")
-    async def ui_stop(run_id: str = Form(...)) -> JSONResponse:
-        run_id = (run_id or "").strip()
-        if not run_id:
-            raise HTTPException(400, "run_id is required")
-        task = ACTIVE_UI_RUNS.get(run_id)
-        if task is None:
-            return JSONResponse({"status": "missing"})
-        if task.done():
-            ACTIVE_UI_RUNS.pop(run_id, None)
-            return JSONResponse({"status": "completed"})
-        task.cancel()
-        return JSONResponse({"status": "cancelling"})
-
-
-    @app.post("/ui/run")
-    async def ui_run(
-        request: Request,
+@app.post(RUN_ROUTE)
+async def pipeline_run(
         file: UploadFile | None = File(None),
         video_url: Optional[str] = Form(None),
         target_work: str = Form("dub"),
@@ -996,7 +1002,7 @@ if ENABLE_UI:
             except HTTPException as exc:
                 await queue.put({"type": "error", "status": exc.status_code, "message": exc.detail})
             except Exception as exc:  # noqa: BLE001
-                logger.exception("UI pipeline run failed: %s", exc)
+                logger.exception("Pipeline run failed: %s", exc)
                 await queue.put({"type": "error", "message": str(exc)})
             finally:
                 PROGRESS_REPORTER.reset(token)
@@ -1004,7 +1010,7 @@ if ENABLE_UI:
 
         async def event_stream():
             task = asyncio.create_task(run_pipeline())
-            ACTIVE_UI_RUNS[run_id] = task
+            ACTIVE_JOBS[run_id] = task
             try:
                 while True:
                     event = await queue.get()
@@ -1012,7 +1018,7 @@ if ENABLE_UI:
                     if event.get("type") == "complete":
                         break
             finally:
-                ACTIVE_UI_RUNS.pop(run_id, None)
+                ACTIVE_JOBS.pop(run_id, None)
                 if not task.done():
                     task.cancel()
                 try:
@@ -1020,40 +1026,9 @@ if ENABLE_UI:
                 except asyncio.CancelledError:
                     pass
                 except Exception:
-                    logger.exception("UI pipeline task raised after completion", exc_info=True)
+                    logger.exception("Pipeline task raised after completion", exc_info=True)
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
-
-else:
-
-    @app.get("/ui", response_class=HTMLResponse)
-    async def ui_home_disabled(request: Request) -> HTMLResponse:  # type: ignore[override]
-        raise HTTPException(404, "UI mode disabled for this orchestrator instance")
-
-
-    @app.get("/ui/options")
-    async def ui_options_disabled() -> JSONResponse:
-        raise HTTPException(404, "UI mode disabled for this orchestrator instance")
-
-
-    @app.get("/ui/file")
-    async def ui_file_disabled(path: str) -> FileResponse:  # type: ignore[override]
-        raise HTTPException(404, "UI mode disabled for this orchestrator instance")
-
-
-    @app.post("/ui/release_media")
-    async def ui_release_media_disabled(*_: Any, **__: Any) -> JSONResponse:
-        raise HTTPException(404, "UI mode disabled for this orchestrator instance")
-
-
-    @app.post("/ui/stop")
-    async def ui_stop_disabled(*_: Any, **__: Any) -> JSONResponse:
-        raise HTTPException(404, "UI mode disabled for this orchestrator instance")
-
-
-    @app.post("/ui/run")
-    async def ui_run_disabled(*_: Any, **__: Any) -> StreamingResponse:
-        raise HTTPException(404, "UI mode disabled for this orchestrator instance")
 
 
 @app.get("/healthz")

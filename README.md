@@ -30,7 +30,7 @@ Bluez-Dubbing is a modular, production-ready pipeline for **automatic video dubb
 ## 🚀 Features
 
 - **End-to-End Dubbing:** From video/audio input to fully dubbed output with burned-in subtitles.
-- **Web UI:** Upload a file or paste a YouTube/Instagram/TikTok link, watch download progress (via yt-dlp), and preview source/final videos inline.
+- **Web UI (independent app):** A standalone static UI that uploads media, monitors yt-dlp progress, and previews results by calling the backend REST API.
 - **Modular Services:** Pluggable ASR, translation, and TTS models—easily extend or swap components.
 - **Audio Source Separation:** Isolate vocals and background for high-quality dubbing.
 - **Flexible Translation Strategies:** Segment-wise or full-text translation with alignment.
@@ -46,16 +46,24 @@ Bluez-Dubbing is a modular, production-ready pipeline for **automatic video dubb
 ```
 bluez-dubbing/
 │
-├── assets/                # Sample videos and audio files
-├── libs/
-│   └── common-schemas/    # Shared Pydantic models, config, and utilities
-├── models_cache/          # Downloaded model weights and configs
-├── outs/                  # Output workspaces for each job
-├── services/
-│   ├── asr/               # ASR service (WhisperX, etc.)
-│   ├── orchestrator/      # Main API and pipeline logic
-│   ├── translation/       # Translation service (deep_translator, etc.)
-│   └── tts/               # TTS service (Edge TTS, etc.)
+├── apps/
+│   ├── backend/
+│   │   ├── cache/             # Audio separation caches and intermediates
+│   │   ├── libs/
+│   │   │   └── common-schemas/ # Shared Pydantic models, config, and utilities
+│   │   ├── models_cache/      # Downloaded model weights and configs
+│   │   ├── outs/              # Output workspaces for each job
+│   │   ├── services/
+│   │   │   ├── asr/           # ASR service (WhisperX, etc.)
+│   │   │   ├── orchestrator/  # Main API and pipeline logic
+│   │   │   ├── translation/   # Translation service (deep_translator, etc.)
+│   │   │   └── tts/           # TTS service (Edge TTS, etc.)
+│   │   └── uploads/           # Cached media uploaded through the UI
+│   └── frontend/
+│       └── public/
+│           ├── assets/        # UI icons and branding
+│           └── index.html     # Standalone web application
+├── Makefile
 └── README.md
 ```
 
@@ -85,18 +93,12 @@ This installs all service dependencies (ASR, translation, TTS, orchestrator) int
 - Copy `.env.example` to `.env` and provide provider keys (DeepL, Azure, etc.).
 - Place required model weights in `models_cache/`.
 
-### 4. **Run the Stack**
+### 4. **Run the Backend Stack**
 
-Launch every microservice with the bundled `Makefile` targets:
-
-```bash
-make start-ui   # start full stack + web UI
-```
-
-To run API-only mode (no UI routes):
+Launch every backend microservice with the bundled `Makefile` target:
 
 ```bash
-make start-api
+make stack-up   # starts ASR, translation, TTS, and orchestrator services
 ```
 
 Stop everything:
@@ -105,21 +107,33 @@ Stop everything:
 make stop
 ```
 
+### 5. **Serve the Frontend UI**
+
+The UI is now a standalone static app. Serve it with any static file server (Python example below):
+
+```bash
+cd apps/frontend/public
+python -m http.server 5173
+```
+
+- The UI expects the backend at `http://localhost:8000/api` by default.  
+- To point it elsewhere, set `window.BLUEZ_API_BASE` in the browser console or store a value in `localStorage.setItem("bluez-backend-base", "https://your-host/api")`.
+
 ---
 
 ## 🛠️ Usage
 
 ### **Web UI**
 
-With `make start-ui` running, open `http://localhost:8000/ui` to access the interactive orchestrator:
+After serving the frontend (see Step 5), open the URL exposed by your static server (for the Python example, `http://localhost:5173`).  
+The UI communicates exclusively with the backend REST API (`http://localhost:8000/api` by default):
 
 - Upload local media **or** provide a public link (YouTube, Instagram, TikTok…)—downloads stream via `yt-dlp` with a live progress bar.
-- Review smart suggestions for source/target languages (English/French pinned, live filtering) and pick models per stage.
-- Track every pipeline step in the live log, including ASR, translation, TTS, separation, etc.
-- Preview the uploaded source and the final rendered video inline.
-- Download final outputs, intermediate JSON dumps, subtitle files, and speech tracks directly from the UI.
+- Review smart suggestions for source/target languages and pick models per stage.
+- Track every pipeline step in the live log, including ASR, translation, TTS, and separation.
+- Preview the uploaded source and generated outputs inline, then download intermediates through REST-served links.
 
-Dark/light theme toggles, Discord-inspired visuals, and responsive layouts come baked in.
+Dark/light themes and the responsive layout remain unchanged.
 
 ### **API Example**
 
@@ -142,18 +156,18 @@ curl -X POST -G 'http://localhost:8000/v1/dub' \
   --data-urlencode 'subtitle_style=netflix_mobile'
 ```
 
-- See `/v1/dub` endpoint in `services/orchestrator/app/main.py` for all parameters.
+- See `/v1/dub` endpoint in `apps/backend/services/orchestrator/app/main.py` for all parameters.
 
 ### **Output**
 
-- All results (final video, audio, subtitles, intermediates) are saved in `outs/<workspace_id>/`.
+- All results (final video, audio, subtitles, intermediates) are saved in `apps/backend/outs/<workspace_id>/`.
 
 ### **Command-Line Interface**
 
 The orchestrator can also be triggered directly without spinning up the HTTP server:
 
 ```bash
-cd bluez-dubbing
+cd bluez-dubbing/apps/backend
 uv run python -m services.orchestrator.cli \
   /path/to/video.mp4 \
   --target-lang fr \
@@ -189,8 +203,8 @@ make test
 
 The `Makefile` target installs the required test dependencies via `uv` and executes pytest inside the orchestrator service.
 
-- Registry tests (`services/*/tests/test_runner_api.py`) validate that every registered ASR/translation/TTS model executes through the corresponding worker shim—useful when you introduce new model configs.
-- An integration test (`services/orchestrator/tests/test_pipeline_integration.py`) drives the orchestrator pipeline end-to-end with patched dependencies to ensure the FastAPI logic and workspace handling remain consistent.
+- Registry tests (`apps/backend/services/*/tests/test_runner_api.py`) validate that every registered ASR/translation/TTS model executes through the corresponding worker shim—useful when you introduce new model configs.
+- An integration test (`apps/backend/services/orchestrator/tests/test_pipeline_integration.py`) drives the orchestrator pipeline end-to-end with patched dependencies to ensure the FastAPI logic and workspace handling remain consistent.
 
 ### **Continuous Integration**
 
@@ -230,7 +244,7 @@ See `libs/common-schemas/config/` for model configs and supported languages.
 ## 🧠 Extending
 
 - **Add new models:** Register in the appropriate service’s `registry.py` and add a config YAML.
-- **Custom pipelines:** Modify `services/orchestrator/app/main.py` for new strategies or steps.
+- **Custom pipelines:** Modify `apps/backend/services/orchestrator/app/main.py` for new strategies or steps.
 
 ---
 

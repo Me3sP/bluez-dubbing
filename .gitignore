@@ -16,6 +16,10 @@ logs/
 models_cache/
 model_cache/
 cache/
+apps/backend/outs/
+apps/backend/uploads/
+apps/backend/models_cache/
+apps/backend/cache/
 assets/not_keep/
 
 # secret files

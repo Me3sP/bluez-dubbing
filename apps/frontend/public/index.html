@@ -520,11 +520,11 @@ input[type="checkbox"] {
 <main>
     <header>
         <div class="brand">
-            <img src="/assets/icon.png" alt="Bluez icon" class="icon icon-dark">
-            <img src="/assets/icon2.png" alt="Bluez icon light" class="icon icon-light">
+            <img src="./assets/icon.png" alt="Bluez icon" class="icon icon-dark">
+            <img src="./assets/icon2.png" alt="Bluez icon light" class="icon icon-light">
             <div>
-                <img src="/assets/logo.png" alt="Bluez logo" class="logo logo-dark">
-                <img src="/assets/logo2.png" alt="Bluez logo light" class="logo logo-light">
+                <img src="./assets/logo.png" alt="Bluez logo" class="logo logo-dark">
+                <img src="./assets/logo2.png" alt="Bluez logo light" class="logo logo-light">
                 <p class="tagline">Choose your vibe, dub in any language, monitor every step.</p>
             </div>
         </div>
@@ -745,6 +745,56 @@ let activeRunId = "";
 let selectedTargetLangs = [];
 let latestResultPayload = null;
 
+function readStoredBackendBase() {
+    try {
+        return window.localStorage?.getItem("bluez-backend-base") || null;
+    } catch (_err) {
+        return null;
+    }
+}
+
+const fallbackBackendBase = (() => {
+    const { protocol, hostname } = window.location;
+    if (hostname === "localhost" || hostname === "127.0.0.1") {
+        return `${protocol}//${hostname}:8000/api`;
+    }
+    return `${window.location.origin.replace(/\/$/, "")}/api`;
+})();
+
+const apiBaseCandidate = window.BLUEZ_API_BASE || readStoredBackendBase() || fallbackBackendBase;
+const apiBaseRaw = String(apiBaseCandidate || "/api");
+const apiUrl = new URL(apiBaseRaw, window.location.origin);
+const API_BASE = apiUrl.href.replace(/\/$/, "");
+const BACKEND_ORIGIN = apiUrl.origin;
+const API_PATH_PREFIX = apiUrl.pathname.replace(/\/$/, "");
+const API_PATH_PREFIX_NO_SLASH = API_PATH_PREFIX.replace(/^\//, "");
+const JOBS_BASE = `${API_BASE}/jobs`;
+const ROUTES = {
+    options: `${API_BASE}/options`,
+    run: `${JOBS_BASE}/run`,
+    stop: `${JOBS_BASE}/stop`,
+    release: `${JOBS_BASE}/release_media`,
+    file: `${JOBS_BASE}/file`,
+};
+
+function resolveBackendUrl(url) {
+    if (!url) return "";
+    if (/^(https?:|blob:|data:)/i.test(url)) {
+        return url;
+    }
+    if (url.startsWith("/")) {
+        return `${BACKEND_ORIGIN}${url}`;
+    }
+    const trimmed = url.replace(/^\/+/, "");
+    if (API_PATH_PREFIX_NO_SLASH && (trimmed === API_PATH_PREFIX_NO_SLASH || trimmed.startsWith(`${API_PATH_PREFIX_NO_SLASH}/`))) {
+        return `${BACKEND_ORIGIN}/${trimmed}`;
+    }
+    const joined = API_PATH_PREFIX
+        ? `${API_PATH_PREFIX}/${trimmed}`
+        : `/${trimmed}`;
+    return `${BACKEND_ORIGIN}${joined}`;
+}
+
 const languageMap = new Map();
 const languageDisplay = typeof Intl !== "undefined" && Intl.DisplayNames
     ? new Intl.DisplayNames([navigator.language || "en"], { type: "language" })
@@ -911,8 +961,8 @@ function updateSourcePreview(src, label, { keepExisting = false, objectUrl = nul
         URL.revokeObjectURL(sourceObjectUrl);
         sourceObjectUrl = null;
     }
-
-    if (!src) {
+    const targetSrc = objectUrl || resolveBackendUrl(src);
+    if (!targetSrc) {
         sourceVideoEl.removeAttribute("src");
         sourceVideoEl.load();
         sourcePreviewCard.classList.add("empty");
@@ -920,7 +970,7 @@ function updateSourcePreview(src, label, { keepExisting = false, objectUrl = nul
         return;
     }
 
-    sourceVideoEl.src = src;
+    sourceVideoEl.src = targetSrc;
     sourceVideoEl.load();
     sourcePreviewCard.classList.remove("empty");
     sourcePreviewText.textContent = label || "";
@@ -961,8 +1011,8 @@ function updateResultPreview(src, label, { objectUrl = null } = {}) {
         URL.revokeObjectURL(resultObjectUrl);
         resultObjectUrl = null;
     }
-
-    if (!src) {
+    const targetSrc = objectUrl || resolveBackendUrl(src);
+    if (!targetSrc) {
         resultVideoEl.removeAttribute("src");
         resultVideoEl.load();
         resultPreviewCard.classList.add("empty");
@@ -970,7 +1020,7 @@ function updateResultPreview(src, label, { objectUrl = null } = {}) {
         return;
     }
 
-    resultVideoEl.src = src;
+    resultVideoEl.src = targetSrc;
     resultVideoEl.load();
     resultPreviewCard.classList.remove("empty");
     resultPreviewText.textContent = label || "";
@@ -1054,7 +1104,7 @@ async function releaseActiveUploadToken() {
     currentSourceDescriptor = "";
     try {
         const params = new URLSearchParams({ token });
-        const url = "/ui/release_media";
+        const url = ROUTES.release;
         let sent = false;
         if (navigator.sendBeacon) {
             const blob = new Blob([params.toString()], { type: "application/x-www-form-urlencoded" });
@@ -1076,8 +1126,8 @@ window.addEventListener("beforeunload", () => {
     if (!activeUploadToken) return;
     const params = new URLSearchParams({ token: activeUploadToken });
     const blob = new Blob([params.toString()], { type: "application/x-www-form-urlencoded" });
-    if (!navigator.sendBeacon || !navigator.sendBeacon("/ui/release_media", blob)) {
-        fetch("/ui/release_media", {
+    if (!navigator.sendBeacon || !navigator.sendBeacon(ROUTES.release, blob)) {
+        fetch(ROUTES.release, {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
             body: params,
@@ -1126,7 +1176,7 @@ if (resultLanguageSelect) {
 }
 
 async function fetchOptions() {
-    const resp = await fetch("/ui/options");
+    const resp = await fetch(ROUTES.options);
     if (!resp.ok) throw new Error("Unable to load model registry");
     optionsCache = await resp.json();
     populateSelectors(optionsCache);
@@ -1285,7 +1335,7 @@ if (interruptBtn) {
         interruptBtn.textContent = "Stopping…";
         try {
             const body = new URLSearchParams({ run_id: activeRunId });
-            await fetch("/ui/stop", {
+            await fetch(ROUTES.stop, {
                 method: "POST",
                 headers: { "Content-Type": "application/x-www-form-urlencoded" },
                 body,
@@ -1365,7 +1415,9 @@ function renderResults(payload) {
 
     function renderLink(item, label) {
         if (!item || !item.url) return `<li>${label}: unavailable</li>`;
-        return `<li>${label}: <a href="${item.url}" target="_blank" rel="noopener">${item.path}</a></li>`;
+        const href = resolveBackendUrl(item.url);
+        const pathLabel = item.path || href;
+        return `<li>${label}: <a href="${href}" target="_blank" rel="noopener">${pathLabel}</a></li>`;
     }
 
     function renderLanguageSection(lang, data) {
@@ -1553,7 +1605,7 @@ formEl.addEventListener("submit", async (event) => {
     runBtn.disabled = true;
 
     try {
-        const response = await fetch("/ui/run", {
+        const response = await fetch(ROUTES.run, {
             method: "POST",
             body: formData,
         });
