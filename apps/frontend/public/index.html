@@ -581,6 +581,48 @@ input[type="checkbox"] {
             border-color: rgba(193, 201, 216, 0.7);
         }
 
+        .review-segment .speaker-select {
+            border-radius: 12px;
+            border: 1px solid rgba(123, 132, 155, 0.35);
+            background: rgba(0, 0, 0, 0.2);
+            color: inherit;
+            padding: 8px 12px;
+            font-size: 0.95rem;
+        }
+
+        body[data-theme="light"] .review-segment .speaker-select {
+            background: rgba(255, 255, 255, 0.92);
+            border-color: rgba(193, 201, 216, 0.7);
+        }
+
+        .review-speaker-controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            align-items: center;
+            padding: 12px 16px;
+            border-radius: 12px;
+            background: rgba(0, 0, 0, 0.15);
+        }
+
+        body[data-theme="light"] .review-speaker-controls {
+            background: rgba(255, 255, 255, 0.75);
+        }
+
+        .review-speaker-controls input[type="text"] {
+            flex: 1 1 200px;
+            border-radius: 999px;
+            padding: 10px 14px;
+            border: 1px solid rgba(123, 132, 155, 0.35);
+            background: rgba(0, 0, 0, 0.2);
+            color: inherit;
+        }
+
+        body[data-theme="light"] .review-speaker-controls input[type="text"] {
+            background: rgba(255, 255, 255, 0.9);
+            border-color: rgba(193, 201, 216, 0.7);
+        }
+
         .review-actions {
             display: flex;
             gap: 12px;
@@ -803,6 +845,21 @@ input[type="checkbox"] {
             </div>
         </div>
 
+        <div class="review-card" id="alignment-review" hidden>
+            <div class="review-header">
+                <h2>Alignment &amp; Speaker Review</h2>
+                <span class="review-status" id="alignment-review-status">Pipeline paused for alignment review.</span>
+            </div>
+            <div class="review-body" id="alignment-review-body">
+                <p class="review-instructions">Adjust segment timings, text, and speakers. You can add, delete, or merge segments as needed.</p>
+            </div>
+            <div class="review-actions">
+                <button type="button" id="alignment-review-add" class="secondary">Add segment</button>
+                <button type="button" id="alignment-review-apply" class="primary">Apply alignment changes</button>
+                <button type="button" id="alignment-review-skip" class="secondary">Continue without changes</button>
+            </div>
+        </div>
+
         <div>
             <h2>Results</h2>
             <div id="results">No runs yet.</div>
@@ -824,6 +881,7 @@ input[type="checkbox"] {
         </div>
 
         <datalist id="language-list"></datalist>
+        <datalist id="speaker-list"></datalist>
     </section>
 </main>
 
@@ -859,6 +917,13 @@ const transcriptionReviewBody = document.getElementById("transcription-review-bo
 const transcriptionReviewStatus = document.getElementById("transcription-review-status");
 const transcriptionReviewApplyBtn = document.getElementById("transcription-review-apply");
 const transcriptionReviewSkipBtn = document.getElementById("transcription-review-skip");
+const alignmentReviewCard = document.getElementById("alignment-review");
+const alignmentReviewBody = document.getElementById("alignment-review-body");
+const alignmentReviewStatus = document.getElementById("alignment-review-status");
+const alignmentReviewApplyBtn = document.getElementById("alignment-review-apply");
+const alignmentReviewSkipBtn = document.getElementById("alignment-review-skip");
+const alignmentReviewAddBtn = document.getElementById("alignment-review-add");
+const alignmentSpeakerList = document.getElementById("speaker-list");
 
 let optionsCache = null;
 let asrModels = [];
@@ -871,7 +936,7 @@ let selectedTargetLangs = [];
 let latestResultPayload = null;
 let involveMode = false;
 let pendingTranscriptionReview = null;
-
+let pendingAlignmentReview = null;
 function readStoredBackendBase() {
     try {
         return window.localStorage?.getItem("bluez-backend-base") || null;
@@ -903,6 +968,7 @@ const ROUTES = {
     release: `${JOBS_BASE}/release_media`,
     file: `${JOBS_BASE}/file`,
     reviewTranscription: `${JOBS_BASE}/transcription_review`,
+    reviewAlignment: `${JOBS_BASE}/alignment_review`,
 };
 
 function resolveBackendUrl(url) {
@@ -1239,6 +1305,492 @@ async function submitTranscriptionReview(applyChanges) {
     }
 }
 
+function collectSpeakersFromSegments(segments) {
+    const set = new Set();
+    (segments || []).forEach(segment => {
+        if (segment && segment.speaker_id) {
+            set.add(segment.speaker_id);
+        }
+    });
+    return Array.from(set).sort();
+}
+
+function normalizeSpeakerList(...lists) {
+    const set = new Set();
+    lists.flat().forEach(value => {
+        if (Array.isArray(value)) {
+            value.forEach(item => {
+                const trimmed = typeof item === "string" ? item.trim() : "";
+                if (trimmed) {
+                    set.add(trimmed);
+                }
+            });
+        } else {
+            const trimmed = typeof value === "string" ? value.trim() : "";
+            if (trimmed) {
+                set.add(trimmed);
+            }
+        }
+    });
+    return Array.from(set).sort();
+}
+
+function updateAlignmentSpeakerOptions(speakers) {
+    if (!alignmentSpeakerList) return;
+    alignmentSpeakerList.innerHTML = "";
+    (speakers || []).forEach(name => {
+        const option = document.createElement("option");
+        option.value = name;
+        alignmentSpeakerList.appendChild(option);
+    });
+}
+
+function refreshAlignmentSpeakerList(extra = []) {
+    if (!pendingAlignmentReview) return;
+    const fromSegments = collectSpeakersFromSegments(pendingAlignmentReview.payload?.segments || []);
+    const current = pendingAlignmentReview.speakers || [];
+    const normalized = normalizeSpeakerList(current, fromSegments, extra);
+    pendingAlignmentReview.speakers = normalized;
+    updateAlignmentSpeakerOptions(normalized);
+}
+
+function addAlignmentSpeakerName(name) {
+    if (!pendingAlignmentReview) return;
+    const value = (name || "").trim();
+    if (!value) {
+        return;
+    }
+    refreshAlignmentSpeakerList([value]);
+    renderAlignmentReview();
+}
+
+function hideAlignmentReview() {
+    pendingAlignmentReview = null;
+    if (alignmentReviewBody) {
+        alignmentReviewBody.innerHTML = '<p class="review-instructions">Adjust segment timings, text, and speakers. You can add, delete, or merge segments as needed.</p>';
+    }
+    if (alignmentReviewStatus) {
+        alignmentReviewStatus.textContent = "Pipeline paused for alignment review.";
+    }
+    if (alignmentReviewApplyBtn) {
+        alignmentReviewApplyBtn.disabled = false;
+    }
+    if (alignmentReviewSkipBtn) {
+        alignmentReviewSkipBtn.disabled = false;
+    }
+    if (alignmentReviewAddBtn) {
+        alignmentReviewAddBtn.disabled = false;
+    }
+    if (alignmentReviewCard) {
+        alignmentReviewCard.hidden = true;
+    }
+    if (alignmentSpeakerList) {
+        alignmentSpeakerList.innerHTML = "";
+    }
+}
+
+function renderAlignmentReview() {
+    if (!pendingAlignmentReview || !alignmentReviewBody) {
+        return;
+    }
+
+    const { payload } = pendingAlignmentReview;
+    const segments = Array.isArray(payload.segments) ? payload.segments : [];
+
+    alignmentReviewBody.innerHTML = "";
+
+    const intro = document.createElement("p");
+    intro.className = "review-instructions";
+    intro.textContent = "Adjust segment timings, text, and speakers. You can add, delete, or merge segments as needed.";
+    alignmentReviewBody.appendChild(intro);
+
+    const speakerControls = document.createElement("div");
+    speakerControls.className = "review-speaker-controls";
+    const speakerInput = document.createElement("input");
+    speakerInput.type = "text";
+    speakerInput.placeholder = "Add new speaker label";
+    speakerInput.setAttribute("list", "speaker-list");
+    const speakerAddBtn = document.createElement("button");
+    speakerAddBtn.type = "button";
+    speakerAddBtn.className = "secondary";
+    speakerAddBtn.textContent = "Add speaker";
+    speakerAddBtn.addEventListener("click", () => {
+        addAlignmentSpeakerName(speakerInput.value);
+        speakerInput.value = "";
+    });
+    speakerInput.addEventListener("keydown", event => {
+        if (event.key === "Enter") {
+            event.preventDefault();
+            addAlignmentSpeakerName(speakerInput.value);
+            speakerInput.value = "";
+        }
+    });
+    speakerControls.appendChild(speakerInput);
+    speakerControls.appendChild(speakerAddBtn);
+    alignmentReviewBody.appendChild(speakerControls);
+
+    if (!segments.length) {
+        const notice = document.createElement("p");
+        notice.className = "review-instructions";
+        notice.textContent = "No aligned segments available. Add segments below if needed.";
+        alignmentReviewBody.appendChild(notice);
+        return;
+    }
+
+    segments.forEach((segment, index) => {
+        const wrapper = document.createElement("div");
+        wrapper.className = "review-segment alignment";
+        wrapper.dataset.index = String(index);
+
+        const meta = document.createElement("div");
+        meta.className = "segment-meta";
+        meta.textContent = `Segment ${index + 1} (${formatTimestamp(segment.start)} – ${formatTimestamp(segment.end)})`;
+
+        const timingRow = document.createElement("div");
+        timingRow.className = "flex";
+
+        const startLabel = document.createElement("label");
+        startLabel.textContent = "Start";
+        const startInput = document.createElement("input");
+        startInput.type = "number";
+        startInput.step = "0.01";
+        startInput.value = segment.start ?? 0;
+        startInput.addEventListener("change", () => {
+            updateAlignmentSegmentTime(index, "start", Number(startInput.value), meta);
+        });
+        startLabel.appendChild(startInput);
+
+        const endLabel = document.createElement("label");
+        endLabel.textContent = "End";
+        const endInput = document.createElement("input");
+        endInput.type = "number";
+        endInput.step = "0.01";
+        endInput.value = segment.end ?? segment.start ?? 0;
+        endInput.addEventListener("change", () => {
+            updateAlignmentSegmentTime(index, "end", Number(endInput.value), meta);
+        });
+        endLabel.appendChild(endInput);
+
+        const speakerLabel = document.createElement("label");
+        speakerLabel.textContent = "Speaker";
+        const speakerSelect = document.createElement("select");
+        speakerSelect.className = "speaker-select";
+        const addOption = (value, label = value) => {
+            const option = document.createElement("option");
+            option.value = value;
+            option.textContent = label;
+            speakerSelect.appendChild(option);
+        };
+        addOption("", "Unassigned");
+        const knownSpeakers = pendingAlignmentReview.speakers || [];
+        knownSpeakers.forEach(name => addOption(name));
+        if (segment.speaker_id && !knownSpeakers.includes(segment.speaker_id)) {
+            addOption(segment.speaker_id);
+        }
+        speakerSelect.value = segment.speaker_id || "";
+        speakerSelect.addEventListener("change", () => {
+            updateAlignmentSegmentSpeaker(index, speakerSelect.value);
+        });
+        speakerLabel.appendChild(speakerSelect);
+
+        timingRow.appendChild(startLabel);
+        timingRow.appendChild(endLabel);
+        timingRow.appendChild(speakerLabel);
+
+        const textArea = document.createElement("textarea");
+        textArea.value = segment.text || "";
+        textArea.addEventListener("input", () => {
+            updateAlignmentSegmentText(index, textArea.value);
+        });
+
+        const controls = document.createElement("div");
+        controls.className = "review-actions";
+
+        const deleteBtn = document.createElement("button");
+        deleteBtn.type = "button";
+        deleteBtn.className = "secondary";
+        deleteBtn.textContent = "Delete segment";
+        deleteBtn.disabled = segments.length <= 1;
+        deleteBtn.addEventListener("click", () => removeAlignmentSegment(index));
+
+        const mergePrevBtn = document.createElement("button");
+        mergePrevBtn.type = "button";
+        mergePrevBtn.className = "secondary";
+        mergePrevBtn.textContent = "Merge with previous";
+        mergePrevBtn.disabled = index === 0;
+        mergePrevBtn.addEventListener("click", () => mergeAlignmentSegment(index - 1));
+
+        const mergeBtn = document.createElement("button");
+        mergeBtn.type = "button";
+        mergeBtn.className = "secondary";
+        mergeBtn.textContent = "Merge with next";
+        mergeBtn.disabled = index >= segments.length - 1;
+        mergeBtn.addEventListener("click", () => mergeAlignmentSegment(index));
+
+        const addAfterBtn = document.createElement("button");
+        addAfterBtn.type = "button";
+        addAfterBtn.className = "secondary";
+        addAfterBtn.textContent = "Add after";
+        addAfterBtn.addEventListener("click", () => addAlignmentSegment(index));
+
+        controls.appendChild(deleteBtn);
+        controls.appendChild(mergePrevBtn);
+        controls.appendChild(mergeBtn);
+        controls.appendChild(addAfterBtn);
+
+        wrapper.appendChild(meta);
+        wrapper.appendChild(timingRow);
+        wrapper.appendChild(textArea);
+        wrapper.appendChild(controls);
+
+        alignmentReviewBody.appendChild(wrapper);
+    });
+}
+
+function ensureAlignmentReviewInitialized() {
+    if (!pendingAlignmentReview) {
+        pendingAlignmentReview = {
+            runId: "",
+            payload: { segments: [] },
+            original: { segments: [] },
+            speakers: [],
+        };
+    }
+}
+
+function addAlignmentSegment(afterIndex) {
+    ensureAlignmentReviewInitialized();
+    const segments = pendingAlignmentReview.payload.segments;
+    const insertIndex = Number.isInteger(afterIndex) && afterIndex >= -1 ? afterIndex + 1 : segments.length;
+    const previous = afterIndex >= 0 ? segments[afterIndex] : segments[segments.length - 1];
+    const next = segments[afterIndex + 1];
+    const baseStart = typeof previous?.end === "number"
+        ? previous.end
+        : typeof previous?.start === "number"
+            ? previous.start
+            : 0;
+    const nextStart = typeof next?.start === "number" ? next.start : baseStart + 1;
+    const speakerList = pendingAlignmentReview?.speakers || [];
+    const defaultSpeaker = segments[afterIndex]?.speaker_id
+        || segments[Math.max(0, segments.length - 1)]?.speaker_id
+        || speakerList[speakerList.length - 1]
+        || speakerList[0]
+        || "";
+
+    const newSegment = {
+        start: baseStart,
+        end: Math.max(baseStart, nextStart),
+        text: "",
+        speaker_id: defaultSpeaker,
+    };
+    segments.splice(insertIndex, 0, newSegment);
+    refreshAlignmentSpeakerList([defaultSpeaker]);
+    renderAlignmentReview();
+}
+
+function removeAlignmentSegment(index) {
+    if (!pendingAlignmentReview) return;
+    const segments = pendingAlignmentReview.payload.segments;
+    if (!Array.isArray(segments) || segments.length <= 1) {
+        return;
+    }
+    segments.splice(index, 1);
+    refreshAlignmentSpeakerList();
+    renderAlignmentReview();
+}
+
+function mergeAlignmentSegment(index) {
+    if (!pendingAlignmentReview) return;
+    const segments = pendingAlignmentReview.payload.segments;
+    if (!Array.isArray(segments) || index < 0 || index >= segments.length - 1) {
+        return;
+    }
+    const current = segments[index];
+    const next = segments[index + 1];
+    current.text = [current.text || "", next.text || ""].filter(Boolean).join(" ").trim();
+    if (typeof next.end === "number") {
+        current.end = next.end;
+    }
+    if (!current.speaker_id && next.speaker_id) {
+        current.speaker_id = next.speaker_id;
+    }
+    current.words = null;
+    segments.splice(index + 1, 1);
+    refreshAlignmentSpeakerList();
+    renderAlignmentReview();
+}
+
+function updateAlignmentSegmentTime(index, field, value, metaEl) {
+    if (!pendingAlignmentReview) return;
+    const segments = pendingAlignmentReview.payload.segments;
+    const segment = segments?.[index];
+    if (!segment || Number.isNaN(value)) {
+        return;
+    }
+    segment[field] = value;
+    if (field === "start" && typeof segment.end === "number" && segment.end < value) {
+        segment.end = value;
+    }
+    if (field === "end" && typeof segment.start === "number" && segment.start > value) {
+        segment.start = value;
+    }
+    if (metaEl) {
+        metaEl.textContent = `Segment ${index + 1} (${formatTimestamp(segment.start)} – ${formatTimestamp(segment.end)})`;
+    }
+}
+
+function updateAlignmentSegmentSpeaker(index, speaker) {
+    if (!pendingAlignmentReview) return;
+    const segments = pendingAlignmentReview.payload.segments;
+    const segment = segments?.[index];
+    if (!segment) return;
+    const normalized = speaker.trim();
+    segment.speaker_id = normalized || null;
+    refreshAlignmentSpeakerList([normalized]);
+}
+
+function updateAlignmentSegmentText(index, text) {
+    if (!pendingAlignmentReview) return;
+    const segments = pendingAlignmentReview.payload.segments;
+    const segment = segments?.[index];
+    if (!segment) return;
+    segment.text = text;
+}
+
+function showAlignmentReview(event) {
+    if (!alignmentReviewCard || !alignmentReviewBody) {
+        return;
+    }
+    const alignedPayload = event?.aligned || {};
+    const speakers = Array.isArray(event?.speakers) ? event.speakers : collectSpeakersFromSegments(alignedPayload.segments);
+    pendingAlignmentReview = {
+        runId: event?.run_id || "",
+        payload: clonePayload(alignedPayload),
+        original: clonePayload(alignedPayload),
+        speakers: Array.from(new Set(speakers)).sort(),
+    };
+
+    if (!Array.isArray(pendingAlignmentReview.payload.segments)) {
+        pendingAlignmentReview.payload.segments = [];
+    }
+    if (!Array.isArray(pendingAlignmentReview.original.segments)) {
+        pendingAlignmentReview.original.segments = [];
+    }
+
+    refreshAlignmentSpeakerList();
+    renderAlignmentReview();
+
+    if (alignmentReviewStatus) {
+        alignmentReviewStatus.textContent = "Pipeline paused for alignment review.";
+    }
+    if (alignmentReviewApplyBtn) {
+        alignmentReviewApplyBtn.disabled = false;
+    }
+    if (alignmentReviewSkipBtn) {
+        alignmentReviewSkipBtn.disabled = false;
+    }
+    if (alignmentReviewAddBtn) {
+        alignmentReviewAddBtn.disabled = false;
+    }
+    alignmentReviewCard.hidden = false;
+    alignmentReviewCard.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+async function submitAlignmentReview(applyChanges) {
+    if (!pendingAlignmentReview) {
+        return false;
+    }
+    const { runId, payload } = pendingAlignmentReview;
+    if (!runId) {
+        return false;
+    }
+
+    const base = applyChanges ? payload : pendingAlignmentReview.original;
+    const submission = clonePayload(base);
+    if (applyChanges && Array.isArray(submission.segments)) {
+        submission.segments.forEach(segment => {
+            segment.words = null;
+        });
+    }
+    if (Array.isArray(submission.segments)) {
+        submission.segments.sort((a, b) => {
+            const startA = typeof a.start === "number" ? a.start : 0;
+            const startB = typeof b.start === "number" ? b.start : 0;
+            return startA - startB;
+        });
+        submission.segments.forEach(segment => {
+            if (segment) {
+                if (typeof segment.start !== "number") {
+                    const parsed = Number(segment.start);
+                    segment.start = Number.isNaN(parsed) ? 0 : parsed;
+                }
+                if (typeof segment.end !== "number") {
+                    const parsed = Number(segment.end);
+                    segment.end = Number.isNaN(parsed) ? segment.start : parsed;
+                }
+                if (segment.end < segment.start) {
+                    segment.end = segment.start;
+                }
+                if (typeof segment.text !== "string") {
+                    segment.text = segment.text ? String(segment.text) : "";
+                }
+                if (typeof segment.speaker_id === "string" && !segment.speaker_id.trim()) {
+                    segment.speaker_id = null;
+                }
+                if (segment.speaker_id === "") {
+                    segment.speaker_id = null;
+                }
+                if (segment.speaker_id === undefined) {
+                    segment.speaker_id = null;
+                }
+            }
+        });
+    }
+
+    if (alignmentReviewApplyBtn) {
+        alignmentReviewApplyBtn.disabled = true;
+    }
+    if (alignmentReviewSkipBtn) {
+        alignmentReviewSkipBtn.disabled = true;
+    }
+    if (alignmentReviewAddBtn) {
+        alignmentReviewAddBtn.disabled = true;
+    }
+    if (alignmentReviewStatus) {
+        alignmentReviewStatus.textContent = "Submitting alignment review…";
+    }
+
+    try {
+        const response = await fetch(ROUTES.reviewAlignment, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ run_id: runId, alignment: submission }),
+        });
+        if (!response.ok) {
+            throw new Error(`Server responded with ${response.status}`);
+        }
+        appendLog(applyChanges ? "🪄 Applied alignment adjustments." : "👍 Alignment accepted without changes.");
+        hideAlignmentReview();
+        setStatus("Running", "running");
+        return true;
+    } catch (err) {
+        if (alignmentReviewStatus) {
+            alignmentReviewStatus.textContent = `Failed to submit alignment review: ${err.message}`;
+        }
+        if (alignmentReviewApplyBtn) {
+            alignmentReviewApplyBtn.disabled = false;
+        }
+        if (alignmentReviewSkipBtn) {
+            alignmentReviewSkipBtn.disabled = false;
+        }
+        if (alignmentReviewAddBtn) {
+            alignmentReviewAddBtn.disabled = false;
+        }
+        appendLog(`❌ Failed to submit alignment review: ${err.message}`);
+        return false;
+    }
+}
+
 function updateSourcePreview(src, label, { keepExisting = false, objectUrl = null } = {}) {
     if (!keepExisting && sourceObjectUrl) {
         URL.revokeObjectURL(sourceObjectUrl);
@@ -1472,6 +2024,28 @@ if (transcriptionReviewSkipBtn) {
 }
 
 hideTranscriptionReview();
+hideAlignmentReview();
+
+if (alignmentReviewApplyBtn) {
+    alignmentReviewApplyBtn.addEventListener("click", () => {
+        submitAlignmentReview(true);
+    });
+}
+
+if (alignmentReviewSkipBtn) {
+    alignmentReviewSkipBtn.addEventListener("click", () => {
+        submitAlignmentReview(false);
+    });
+}
+
+if (alignmentReviewAddBtn) {
+    alignmentReviewAddBtn.addEventListener("click", () => {
+        if (!pendingAlignmentReview) {
+            return;
+        }
+        addAlignmentSegment(pendingAlignmentReview.payload.segments.length - 1);
+    });
+}
 
 updateSourcePreview(null, "Waiting for media…");
 updateResultPreview(null, "No output yet.");
@@ -1801,6 +2375,7 @@ formEl.addEventListener("submit", async (event) => {
     }
 
     hideTranscriptionReview();
+    hideAlignmentReview();
 
     let linkValue = videoLinkInput.value.trim();
     let hasFile = fileInput.files && fileInput.files.length > 0;
@@ -1984,6 +2559,7 @@ function handleEvent(event) {
             resultsEl.textContent = "Run cancelled.";
             updateResultPreview(null, "Cancelled.");
             hideTranscriptionReview();
+            hideAlignmentReview();
             hideInterruptButton();
             activeRunId = "";
             break;
@@ -1991,6 +2567,7 @@ function handleEvent(event) {
             appendLog("🎉 Pipeline completed.");
             setStatus("Done", "success");
             hideTranscriptionReview();
+            hideAlignmentReview();
             renderResults(event.result);
             {
                 const token = event.result?.upload_token || "";
@@ -2020,6 +2597,10 @@ function handleEvent(event) {
                 } else {
                     updateDownloadProgress({ active: true, progress: null, label: "Downloading…" });
                 }
+            } else if (event.event === "awaiting_transcription_review") {
+                setStatus("Awaiting transcription review", "paused");
+            } else if (event.event === "awaiting_alignment_review") {
+                setStatus("Awaiting alignment review", "paused");
             } else {
                 appendLog(`ℹ️ ${event.event || "status"}`);
             }
@@ -2034,6 +2615,17 @@ function handleEvent(event) {
             setStatus("Running", "running");
             hideTranscriptionReview();
             break;
+        case "alignment_review":
+            appendLog("✍️ Awaiting alignment review.");
+            setStatus("Awaiting alignment review", "paused");
+            hideTranscriptionReview();
+            showAlignmentReview(event);
+            break;
+        case "alignment_review_complete":
+            appendLog("✅ Alignment review submitted. Resuming pipeline.");
+            setStatus("Running", "running");
+            hideAlignmentReview();
+            break;
         case "source_preview":
             if (event.preview && event.preview.url) {
                 updateSourcePreview(event.preview.url, "Source ready");
@@ -2044,6 +2636,7 @@ function handleEvent(event) {
             appendLog(`❌ Error: ${event.message || "unknown failure"}`);
             setStatus("Error", "error");
             hideTranscriptionReview();
+            hideAlignmentReview();
             hideInterruptButton();
             activeRunId = "";
             break;
@@ -2051,6 +2644,7 @@ function handleEvent(event) {
             appendLog("🏁 Stream closed.");
             hideInterruptButton();
             hideTranscriptionReview();
+            hideAlignmentReview();
             activeRunId = "";
             break;
         default:

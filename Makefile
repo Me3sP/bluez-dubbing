@@ -48,6 +48,10 @@ restart dev-restart: stop
 	@sleep 1
 	@$(MAKE) stack-up
 
+restart-ui: stop
+	@sleep 1
+	@$(MAKE) start-ui
+
 dev dev-up: start-ui
 
 check-ports:

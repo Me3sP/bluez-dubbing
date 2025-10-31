@@ -114,6 +114,7 @@ PROGRESS_REPORTER: contextvars.ContextVar[Optional[Callable[[Dict[str, Any]], No
 
 ACTIVE_JOBS: Dict[str, asyncio.Task] = {}
 TRANSCRIPTION_REVIEW_WAITERS: Dict[str, asyncio.Future[ASRResponse]] = {}
+ALIGNMENT_REVIEW_WAITERS: Dict[str, asyncio.Future[ASRResponse]] = {}
 
 app.mount("/outs", StaticFiles(directory=str(OUTS), check_dir=False), name="outs")
 
@@ -169,6 +170,18 @@ async def wait_for_transcription_review(run_id: str) -> ASRResponse:
         return await future
     finally:
         stored = TRANSCRIPTION_REVIEW_WAITERS.pop(run_id, None)
+        if stored is future and not future.done():
+            future.cancel()
+
+
+async def wait_for_alignment_review(run_id: str) -> ASRResponse:
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[ASRResponse] = loop.create_future()
+    ALIGNMENT_REVIEW_WAITERS[run_id] = future
+    try:
+        return await future
+    finally:
+        stored = ALIGNMENT_REVIEW_WAITERS.pop(run_id, None)
         if stored is future and not future.done():
             future.cancel()
 
@@ -876,6 +889,11 @@ class TranscriptionReviewRequest(BaseModel):
     transcription: ASRResponse
 
 
+class AlignmentReviewRequest(BaseModel):
+    run_id: str
+    alignment: ASRResponse
+
+
 @app.post(f"{JOBS_PREFIX}/transcription_review")
 async def pipeline_submit_transcription_review(review: TranscriptionReviewRequest) -> JSONResponse:
     run_id = (review.run_id or "").strip()
@@ -887,6 +905,20 @@ async def pipeline_submit_transcription_review(review: TranscriptionReviewReques
     if future.done():
         raise HTTPException(409, "Transcription review already submitted for this run.")
     future.set_result(review.transcription)
+    return JSONResponse({"status": "accepted"})
+
+
+@app.post(f"{JOBS_PREFIX}/alignment_review")
+async def pipeline_submit_alignment_review(review: AlignmentReviewRequest) -> JSONResponse:
+    run_id = (review.run_id or "").strip()
+    if not run_id:
+        raise HTTPException(400, "run_id is required")
+    future = ALIGNMENT_REVIEW_WAITERS.get(run_id)
+    if future is None:
+        raise HTTPException(404, "No pending alignment review for this run.")
+    if future.done():
+        raise HTTPException(409, "Alignment review already submitted for this run.")
+    future.set_result(review.alignment)
     return JSONResponse({"status": "accepted"})
 
 
@@ -1322,7 +1354,7 @@ async def dub(
             )
 
         original_raw_dump = raw_asr_result.model_dump()
-        asr_raw_path = workspace.maybe_dump_json("asr/asr_0_result.json", original_raw_dump)
+        asr_raw_path = ""
 
         if involve_mode:
             emit_progress({
@@ -1350,7 +1382,6 @@ async def dub(
             raw_asr_result.WordSegments = None
             for segment in raw_asr_result.segments:
                 segment.words = None
-            workspace.maybe_dump_json("asr/asr_0_result.reviewed.json", raw_asr_result.model_dump())
 
             raw_asr_result.extra = dict(raw_asr_result.extra or {})
             raw_asr_result.extra.setdefault("enable_diarization", True)
@@ -1362,6 +1393,8 @@ async def dub(
             )
             emit_progress({"type": "transcription_review_complete", "run_id": run_id})
 
+        asr_raw_path = workspace.maybe_dump_json("asr/asr_0_result.json", raw_asr_result.model_dump())
+
         if involve_mode:
             source_lang = raw_asr_result.language or source_lang
         else:
@@ -1369,6 +1402,43 @@ async def dub(
 
         if aligned_asr_result is None:
             raise HTTPException(500, "ASR alignment result missing after transcription stage.")
+
+        initial_aligned_dump = aligned_asr_result.model_dump()
+        asr_aligned_path = ""
+
+        if involve_mode:
+            speakers = sorted({seg.speaker_id for seg in aligned_asr_result.segments if seg.speaker_id})
+            emit_progress(
+                {
+                    "type": "alignment_review",
+                    "run_id": run_id,
+                    "aligned": initial_aligned_dump,
+                    "speakers": speakers,
+                    "artifacts": {
+                        "aligned_path": asr_aligned_path,
+                        "raw_path": asr_raw_path,
+                    },
+                }
+            )
+            emit_progress({"type": "status", "event": "awaiting_alignment_review"})
+            reviewed_alignment = await wait_for_alignment_review(run_id)
+
+            merged_extra = dict(aligned_asr_result.extra or {})
+            merged_extra.update(reviewed_alignment.extra or {})
+            reviewed_alignment.extra = merged_extra
+            if not reviewed_alignment.audio_url:
+                reviewed_alignment.audio_url = aligned_asr_result.audio_url or raw_asr_result.audio_url
+            if not reviewed_alignment.language:
+                reviewed_alignment.language = aligned_asr_result.language or raw_asr_result.language
+            reviewed_alignment.WordSegments = None
+            for segment in reviewed_alignment.segments:
+                segment.words = None
+            reviewed_alignment.segments = sorted(
+                reviewed_alignment.segments,
+                key=lambda seg: seg.start if seg.start is not None else 0.0,
+            )
+            aligned_asr_result = reviewed_alignment
+            emit_progress({"type": "alignment_review_complete", "run_id": run_id})
 
         asr_aligned_path = workspace.maybe_dump_json(
             "asr/asr_0_aligned_result.json",
