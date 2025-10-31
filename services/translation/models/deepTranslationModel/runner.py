@@ -1,19 +1,33 @@
-from deep_translator import (GoogleTranslator,
-                             ChatGptTranslator,
-                             MicrosoftTranslator,
-                             PonsTranslator,
-                             LingueeTranslator,
-                             MyMemoryTranslator,
-                             YandexTranslator,
-                             PapagoTranslator,
-                             DeeplTranslator,
-                             QcriTranslator,
-                             single_detection,
-                             batch_detection) # any of them is usable but be aware that some require API keys
+from deep_translator import (
+    GoogleTranslator,
+    ChatGptTranslator,
+    MicrosoftTranslator,
+    PonsTranslator,
+    LingueeTranslator,
+    MyMemoryTranslator,
+    YandexTranslator,
+    PapagoTranslator,
+    DeeplTranslator,
+    QcriTranslator,
+    single_detection,
+    batch_detection,
+)  # any of them is usable but be aware that some require API keys
 from common_schemas.models import ASRResponse, TranslateRequest, Segment
-import json, sys, os, contextlib
+import json, sys, os, contextlib, logging, time
 
-def build_translator(req: "TranslateRequest"):
+
+def _get_logger() -> logging.Logger:
+    logger = logging.getLogger("translation.deep_translator")
+    if not logger.handlers:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    return logger
+
+
+def build_translator(req: "TranslateRequest", logger: logging.Logger):
     # Map provider names to translator classes
     translators = {
         "google": GoogleTranslator,
@@ -32,6 +46,9 @@ def build_translator(req: "TranslateRequest"):
     provider = extra_0.get("model_name", "google").lower()
 
     TranslatorCls = translators.get(provider, GoogleTranslator)
+    if TranslatorCls is GoogleTranslator and provider not in translators:
+        logger.warning("Unknown translator provider '%s'. Falling back to Google Translator.", provider)
+    logger.info("Using provider=%s for translation.", TranslatorCls.__name__)
 
     # Ensure source/target are present unless explicitly provided
     kwargs = {}
@@ -52,11 +69,13 @@ def build_translator(req: "TranslateRequest"):
         if "model" not in kwargs and os.getenv("OPENAI_MODEL"):
             kwargs["model"] = os.getenv("OPENAI_MODEL")
 
+    logger.debug("Translator kwargs=%s", {k: ("***" if "key" in k else v) for k, v in kwargs.items()})
     return TranslatorCls(**kwargs)
 
 if __name__ == "__main__":
 
     req = TranslateRequest(**json.loads(sys.stdin.read()))
+    logger = _get_logger()
 
     out = ASRResponse()
 
@@ -66,14 +85,28 @@ if __name__ == "__main__":
         req.target_lang = "zh-CN" # or "zh-TW" based on your needs
 
     with contextlib.redirect_stdout(sys.stderr):
+        start = time.perf_counter()
+        logger.info(
+            "Starting translation run segments=%d source=%s target=%s",
+            len(req.segments or []),
+            req.source_lang,
+            req.target_lang,
+        )
 
-        translator = build_translator(req)
+        translator = build_translator(req, logger)
 
         for i, segment in enumerate(req.segments):
+            seg_start = time.perf_counter()
             try:
                 translated_text = translator.translate(segment.text)
-            except Exception:
+            except Exception as exc:
                 # Fallback to Google if selected provider fails
+                logger.warning(
+                    "Provider translation failed for segment=%d (%s). Falling back to Google. error=%s",
+                    i,
+                    type(exc).__name__,
+                    exc,
+                )
                 fallback = GoogleTranslator(source=getattr(req, "source_lang", None) or "auto",
                                             target=req.target_lang)
                 translated_text = fallback.translate(segment.text)
@@ -86,6 +119,17 @@ if __name__ == "__main__":
                 lang=req.target_lang
             ))
             out.language = req.target_lang
+            logger.info(
+                "Translated segment %d duration=%.2fs chars_in=%d",
+                i,
+                time.perf_counter() - seg_start,
+                len(segment.text or ""),
+            )
+        logger.info(
+            "Completed translation run in %.2fs (segments=%d).",
+            time.perf_counter() - start,
+            len(out.segments),
+        )
 
     sys.stdout.write(out.model_dump_json() + "\n")
     sys.stdout.flush()

@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import threading
+import sys
 from pathlib import Path
 from typing import Dict, Tuple, Type, TypeVar
 
@@ -38,7 +39,7 @@ class PersistentWorker:
                 self._cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=None,
+                stderr=sys.stderr,
                 text=True,
                 cwd=self._cwd,
                 env=env,
@@ -100,13 +101,16 @@ def call_worker(model_key: str, payload: BaseModel, out_model: type[T]) -> T:
         cmd = [str(vpy), str(runner)]
         proc = subprocess.run(
             cmd,
-            input=payload.model_dump_json().encode("utf-8"),
-            capture_output=True,
+            input=payload.model_dump_json(),
+            stdout=subprocess.PIPE,
+            stderr=sys.stderr,
             cwd=runner.parent,
+            text=True,
+            check=False,
         )
         if proc.returncode != 0:
-            raise RuntimeError(f"worker failed ({proc.returncode}): {proc.stderr.decode('utf-8', 'ignore')}")
-        out = proc.stdout.decode("utf-8", "ignore").strip()
+            raise RuntimeError(f"worker failed ({proc.returncode}); see runner stderr for details.")
+        out = (proc.stdout or "").strip()
     else:
         cmd = (str(vpy), str(runner))
         worker = _get_persistent_worker(cmd, runner.parent)

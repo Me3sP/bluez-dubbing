@@ -849,10 +849,10 @@ function renderTargetLanguageTags() {
         removeBtn.type = "button";
         removeBtn.setAttribute("aria-label", `Remove ${display}`);
         removeBtn.textContent = "×";
-        removeBtn.addEventListener("click", () => {
-            selectedTargetLangs = selectedTargetLangs.filter(item => item !== code);
-            renderTargetLanguageTags();
-            updateModelSelectorsForTarget();
+        removeBtn.addEventListener("click", event => {
+            event.preventDefault();
+            event.stopPropagation();
+            removeTargetLanguage(code);
         });
         const hidden = document.createElement("input");
         hidden.type = "hidden";
@@ -862,6 +862,20 @@ function renderTargetLanguageTags() {
         badge.appendChild(hidden);
         targetLangTags.appendChild(badge);
     });
+}
+
+function removeTargetLanguage(rawValue) {
+    const normalized = resolveLanguageCode(rawValue);
+    if (!normalized) {
+        return;
+    }
+    const index = selectedTargetLangs.indexOf(normalized);
+    if (index === -1) {
+        return;
+    }
+    selectedTargetLangs.splice(index, 1);
+    renderTargetLanguageTags();
+    updateModelSelectorsForTarget();
 }
 
 function addTargetLanguage(rawValue) {
@@ -1238,13 +1252,12 @@ function populateSelectors(opts) {
                         event.preventDefault();
                     }
                     return;
-                }
+            }
                 event.preventDefault();
                 addTargetLanguage(pending);
             } else if (event.key === "Backspace" && !targetLangInput.value && selectedTargetLangs.length) {
-                selectedTargetLangs.pop();
-                renderTargetLanguageTags();
-                updateModelSelectorsForTarget();
+                const last = selectedTargetLangs[selectedTargetLangs.length - 1];
+                removeTargetLanguage(last);
             }
         });
         targetLangInput.addEventListener("blur", () => {

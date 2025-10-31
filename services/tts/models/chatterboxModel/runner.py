@@ -4,6 +4,8 @@ import json
 import os
 import sys
 import threading
+import logging
+import time
 from pathlib import Path
 from typing import Dict, Tuple
 
@@ -15,6 +17,20 @@ from common_schemas.models import SegmentAudioOut, TTSRequest, TTSResponse
 
 _MODEL_CACHE: Dict[Tuple[str, str], Tuple[torch.nn.Module, int]] = {}
 _MODEL_LOCK = threading.Lock()
+_LOGGER = None
+
+
+def _get_logger() -> logging.Logger:
+    global _LOGGER
+    if _LOGGER is None:
+        _LOGGER = logging.getLogger("tts.chatterbox")
+        if not _LOGGER.handlers:
+            handler = logging.StreamHandler(sys.stderr)
+            handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+            _LOGGER.addHandler(handler)
+        _LOGGER.setLevel(logging.INFO)
+        _LOGGER.propagate = False
+    return _LOGGER
 
 
 def _device() -> str:
@@ -22,20 +38,31 @@ def _device() -> str:
 
 
 def _load_model(model_name: str, device: str):
+    logger = _get_logger()
     key = (model_name, device)
     with _MODEL_LOCK:
         cached = _MODEL_CACHE.get(key)
         if cached:
+            logger.debug("Using cached chatterbox model=%s device=%s.", model_name, device)
             return cached
 
+        load_start = time.perf_counter()
         model = ChatterboxMultilingualTTS.from_pretrained(device=device)
         sample_rate = model.sr
 
         _MODEL_CACHE[key] = (model, sample_rate)
+        logger.info(
+            "Loaded chatterbox model=%s device=%s in %.2fs.",
+            model_name,
+            device,
+            time.perf_counter() - load_start,
+        )
         return _MODEL_CACHE[key]
 
 
 def _synthesize(req: TTSRequest) -> TTSResponse:
+    logger = _get_logger()
+    run_start = time.perf_counter()
     workspace_path = Path(req.workspace)
     workspace_path.mkdir(parents=True, exist_ok=True)
 
@@ -45,8 +72,16 @@ def _synthesize(req: TTSRequest) -> TTSResponse:
 
     out = TTSResponse()
     generation_kwargs = (req.extra or {}).get("generate", {})
+    logger.info(
+        "Starting chatterbox synthesis segments=%d workspace=%s model=%s device=%s",
+        len(req.segments or []),
+        req.workspace,
+        model_name,
+        device,
+    )
 
     for i, segment in enumerate(req.segments):
+        seg_start = time.perf_counter()
         audio_prompt = segment.audio_prompt_url or None
         if audio_prompt and not Path(audio_prompt).exists():
             raise FileNotFoundError(f"Audio prompt file not found: {audio_prompt}")
@@ -72,7 +107,19 @@ def _synthesize(req: TTSRequest) -> TTSResponse:
                 sample_rate=sample_rate,
             )
         )
+        logger.info(
+            "Generated segment %d lang=%s prompt=%s duration=%.2fs",
+            i,
+            segment.lang,
+            bool(audio_prompt),
+            time.perf_counter() - seg_start,
+        )
 
+    logger.info(
+        "Completed chatterbox synthesis in %.2fs (segments=%d).",
+        time.perf_counter() - run_start,
+        len(out.segments),
+    )
     return out
 
 

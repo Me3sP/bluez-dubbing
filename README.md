@@ -47,7 +47,6 @@ Bluez-Dubbing is a modular, production-ready pipeline for **automatic video dubb
 bluez-dubbing/
 │
 ├── assets/                # Sample videos and audio files
-├── deploy/                # Deployment scripts/configs
 ├── libs/
 │   └── common-schemas/    # Shared Pydantic models, config, and utilities
 ├── models_cache/          # Downloaded model weights and configs
@@ -232,13 +231,6 @@ See `libs/common-schemas/config/` for model configs and supported languages.
 
 - **Add new models:** Register in the appropriate service’s `registry.py` and add a config YAML.
 - **Custom pipelines:** Modify `services/orchestrator/app/main.py` for new strategies or steps.
-
----
-
-## 📦 Deployment
-
-- Use Docker, systemd, or your favorite process manager for production.
-- GPU recommended for ASR and TTS.
 
 ---
 

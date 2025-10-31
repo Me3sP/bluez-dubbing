@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, subprocess
+import json, subprocess, sys
 import shutil
 from pathlib import Path
 from typing import Dict, Type, TypeVar
@@ -36,19 +36,21 @@ def call_worker(model_key: str, payload: BaseModel, out_model: type[T], runner_i
 
     proc = subprocess.run(
         cmd,
-        input=payload.model_dump_json().encode("utf-8"),
-        capture_output=True,
+        input=payload.model_dump_json(),
+        stdout=subprocess.PIPE,
+        stderr=sys.stderr,
         cwd=str(cwd),
         check=False,
+        text=True,
     )
 
     if proc.returncode != 0:
-        raise RuntimeError(f"worker failed ({proc.returncode}): {proc.stderr.decode('utf-8', 'ignore')}")
-    out = proc.stdout.decode("utf-8", "ignore").strip()
+        raise RuntimeError(f"worker failed ({proc.returncode}); see runner stderr for details.")
+    out = (proc.stdout or "").strip()
     if not out:
-        raise RuntimeError(f"worker produced no output. stderr:\n{proc.stderr.decode('utf-8','ignore')}")
+        raise RuntimeError("worker produced no output. Check runner stderr for errors.")
     try:
         data = json.loads(out)
     except json.JSONDecodeError as e:
-        raise RuntimeError(f"invalid JSON from worker: {e}\nraw:\n{out}\nstderr:\n{proc.stderr.decode('utf-8','ignore')}")
+        raise RuntimeError(f"invalid JSON from worker: {e}\nraw:\n{out}")
     return out_model(**data)

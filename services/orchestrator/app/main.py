@@ -86,7 +86,7 @@ PROGRESS_REPORTER: contextvars.ContextVar[Optional[Callable[[Dict[str, Any]], No
 
 ACTIVE_UI_RUNS: Dict[str, asyncio.Task] = {}
 
-app.mount("/outs", StaticFiles(directory=str(OUTS)), name="outs")
+app.mount("/outs", StaticFiles(directory=str(OUTS), check_dir=False), name="outs")
 if ENABLE_UI:
     assets_dir = BASE / "assets"
     if assets_dir.exists():
@@ -1125,6 +1125,8 @@ async def dub(
     video_url = video_url.strip()
     if target_work == "sub" and subtitle_style is None:
         subtitle_style = "default_mobile"
+    if dubbing_strategy != "translation_over":
+        dubbing_strategy = "full_replacement" # other values default to full_replacement
 
     source_lang = (source_lang or "").strip() or None
     target_lang = (target_lang or "").strip() or None

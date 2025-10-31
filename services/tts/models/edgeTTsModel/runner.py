@@ -3,6 +3,8 @@ import random
 import os
 import sys, json, contextlib
 import subprocess
+import logging
+import time
 from pathlib import Path
 
 import edge_tts
@@ -11,15 +13,34 @@ from edge_tts import VoicesManager
 from common_schemas.models import TTSRequest, TTSResponse, SegmentAudioOut
 
 
-def convert_mp3_to_wav(src_mp3: Path, dst_wav: Path, sample_rate: int = 24000, channels: int = 1) -> None:
+def _get_logger() -> logging.Logger:
+    logger = logging.getLogger("tts.edge_tts")
+    if not logger.handlers:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    return logger
+
+
+def convert_mp3_to_wav(src_mp3: Path, dst_wav: Path, sample_rate: int = 24000, channels: int = 1, logger: logging.Logger | None = None) -> None:
     # Requires ffmpeg in PATH
     dst_wav.parent.mkdir(parents=True, exist_ok=True)
+    start = time.perf_counter()
     subprocess.run(
         ["ffmpeg", "-y", "-i", str(src_mp3), "-ar", str(sample_rate), "-ac", str(channels), str(dst_wav)],
         check=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+    if logger:
+        logger.info(
+            "Converted MP3->WAV in %.2fs (%s -> %s).",
+            time.perf_counter() - start,
+            src_mp3.name,
+            dst_wav.name,
+        )
 
 def pick_voice_name(voices: VoicesManager, lang: str, gender: str | None, seed_key: str, default_voice: str) -> str:
     # stable selection per seed_key
@@ -52,9 +73,10 @@ def pick_voice_name(voices: VoicesManager, lang: str, gender: str | None, seed_k
     name = choose(cands) or default_voice
     return name
 
-async def synthesize_all(req: TTSRequest, out_format: str, default_voice: str, gender: str | None, **kwargs) -> TTSResponse:
+async def synthesize_all(req: TTSRequest, out_format: str, default_voice: str, gender: str | None, logger: logging.Logger, **kwargs) -> TTSResponse:
     out = TTSResponse()
     workspace_path = Path(req.workspace)
+    workspace_path.mkdir(parents=True, exist_ok=True)
     voices = await VoicesManager.create()
 
     # keep voice consistent per speaker+lang
@@ -74,12 +96,13 @@ async def synthesize_all(req: TTSRequest, out_format: str, default_voice: str, g
             speaker_voice_map[key] = voice_name
 
         # Synthesize to MP3
+        seg_start = time.perf_counter()
         communicate = edge_tts.Communicate(segment.text, voice_name, **kwargs)
         await communicate.save(str(mp3_path))
 
         # Post-process format
         if out_format == "wav":
-            convert_mp3_to_wav(mp3_path, wav_path)
+            convert_mp3_to_wav(mp3_path, wav_path, logger=logger)
             audio_url = str(wav_path)
             # remove mp3
             with contextlib.suppress(Exception):
@@ -87,6 +110,13 @@ async def synthesize_all(req: TTSRequest, out_format: str, default_voice: str, g
         else:
             audio_url = str(mp3_path)
 
+        logger.info(
+            "Synthesized segment %d voice=%s lang=%s duration=%.2fs",
+            i,
+            voice_name,
+            segment.lang,
+            time.perf_counter() - seg_start,
+        )
         out.segments.append(SegmentAudioOut(
             start=segment.start,
             end=segment.end,
@@ -98,17 +128,44 @@ async def synthesize_all(req: TTSRequest, out_format: str, default_voice: str, g
 
 if __name__ == "__main__":
     req = TTSRequest(**json.loads(sys.stdin.read()))
-    extra = req.extra.get("params", {})
-    out_format = extra.get("general", {}).get("out_format", "wav")
-    default_voice = extra.get("general", {}).get("default_voice", "en-US-AriaNeural")
-    gender = extra.get("general", {}).get("gender", None)
+    params = (req.extra or {}).get("params", {})
+    general_cfg = params.get("general", {})
+    communicate_cfg = params.get("communicate", {})
+    out_format = general_cfg.get("out_format", "wav")
+    default_voice = general_cfg.get("default_voice", "en-US-AriaNeural")
+    gender = general_cfg.get("gender", None)
+    logger = _get_logger()
 
     with contextlib.redirect_stdout(sys.stderr):
+        run_start = time.perf_counter()
+        logger.info(
+            "Starting Edge TTS run segments=%d workspace=%s format=%s default_voice=%s gender=%s",
+            len(req.segments or []),
+            req.workspace,
+            out_format,
+            default_voice,
+            gender,
+        )
         try:
-            result = asyncio.run(synthesize_all(req, out_format=out_format, default_voice=default_voice, gender=gender, **extra.get("communicate", {})))
+            result = asyncio.run(
+                synthesize_all(
+                    req,
+                    out_format=out_format,
+                    default_voice=default_voice,
+                    gender=gender,
+                    logger=logger,
+                    **communicate_cfg,
+                )
+            )
         except Exception as e:
             # Surface a clean error to orchestrator
             sys.stderr.write(f"[edge-tts] Error: {e}\n")
             raise
+        else:
+            logger.info(
+                "Completed Edge TTS run in %.2fs (segments=%d).",
+                time.perf_counter() - run_start,
+                len(result.segments),
+            )
     sys.stdout.write(result.model_dump_json() + "\n")
     sys.stdout.flush()

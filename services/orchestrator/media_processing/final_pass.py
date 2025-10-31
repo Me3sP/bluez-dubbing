@@ -28,23 +28,7 @@ def apply_audio_to_video(
 
     vd = get_audio_duration(video_path)  # video duration in seconds (ms precision)
 
-    if dubbing_strategy == "full_replacement":
-        # full_replacement: replace original audio with TTS, pad and trim to exact video duration
-        filter_complex = f"[1:a]apad,atrim=0:{vd:.3f},asetpts=PTS-STARTPTS[aout]"
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", str(video_path),
-            "-i", str(audio_path),
-            "-filter_complex", filter_complex,
-            "-map", "0:v:0",
-            "-map", "[aout]",
-            "-c:v", "copy",
-            "-c:a", "aac", "-b:a", "192k",
-            "-movflags", "+faststart",
-            str(output_path),
-        ]
-
-    else:  # default: translation_over
+    if dubbing_strategy == "translation_over":  # translation_over
         # Inputs:
         #  - 0:v video
         #  - 0:a original audio
@@ -66,6 +50,22 @@ def apply_audio_to_video(
             f"[orig][voice]amix=inputs=2:weights=1|1:normalize=0,aresample=async=1:first_pts=0[aout]"
         )
 
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(video_path),
+            "-i", str(audio_path),
+            "-filter_complex", filter_complex,
+            "-map", "0:v:0",
+            "-map", "[aout]",
+            "-c:v", "copy",
+            "-c:a", "aac", "-b:a", "192k",
+            "-movflags", "+faststart",
+            str(output_path),
+        ]
+        
+    else : # default: full_replacement
+        # full_replacement: replace original audio with TTS, pad and trim to exact video duration
+        filter_complex = f"[1:a]apad,atrim=0:{vd:.3f},asetpts=PTS-STARTPTS[aout]"
         cmd = [
             "ffmpeg", "-y",
             "-i", str(video_path),
