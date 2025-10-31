@@ -5,7 +5,6 @@ from typing import List, Optional, Dict, Any, Tuple
 class ASRRequest(BaseModel):
     audio_url: str
     language_hint: str | None = None
-    allow_short: bool = False # diarize after alignment when True
     min_speakers: Optional[int] = None  # optional number of speakers for diarization (min, max) if known
     max_speakers: Optional[int] = None
     # Free-form bucket for future-proofing
@@ -36,10 +35,6 @@ class ASRResponse(BaseModel):
     # Free-form bucket for future-proofing
     extra: Dict[str, Any] = Field(default_factory=dict)
 
-
-class ASRResultWrapper(BaseModel):
-    raw: ASRResponse | None = None
-    aligned: ASRResponse
 
 # Translate
 class TranslateRequest(BaseModel):

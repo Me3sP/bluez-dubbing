@@ -10,10 +10,10 @@
   border: 1px solid rgba(80, 82, 87, 0.45);
 ">
   <div style="display:flex; align-items:center; gap:14px; margin-bottom:28px;">
-    <img src="assets/icon.png"
+    <img src="apps/frontend/public/assets/icon.png"
          alt="Bluez icon"
          style="height:64px; width:64px; border-radius:16px; object-fit:cover; box-shadow:0 8px 18px rgba(0,0,0,0.4);">
-    <img src="assets/logo.png"
+    <img src="apps/frontend/public/assets/logo.png"
          alt="Bluez logo"
          style="height:64px;">
   </div>

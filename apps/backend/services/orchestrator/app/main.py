@@ -564,26 +564,43 @@ async def run_asr_step(
     raw_audio_path: Path,
     asr_model: str,
     source_lang: Optional[str],
-    allow_short: bool,
     min_speakers: Optional[int],
     max_speakers: Optional[int],
 ) -> Tuple[ASRResponse, ASRResponse]:
     asr_req = ASRRequest(
         audio_url=str(raw_audio_path),
         language_hint=source_lang if source_lang else None,
-        allow_short=allow_short,
         min_speakers=min_speakers,
         max_speakers=max_speakers,
     )
-    response = await client.post(ASR_URL, params={"model_key": asr_model}, json=asr_req.model_dump())
-    if response.status_code != 200:
-        raise HTTPException(500, f"ASR failed: {response.text}")
+    raw_resp = await client.post(
+        ASR_URL,
+        params={"model_key": asr_model, "runner_index": 0},
+        json=asr_req.model_dump(),
+    )
+    if raw_resp.status_code != 200:
+        raise HTTPException(500, f"ASR transcription failed: {raw_resp.text}")
 
-    response_data = response.json()
-    if not isinstance(response_data, dict) or "raw" not in response_data or "aligned" not in response_data:
-        raise HTTPException(500, f"ASR returned unexpected payload: {list(response_data.keys())}")
+    raw_result = ASRResponse(**raw_resp.json())
+    raw_result.extra = dict(raw_result.extra or {})
+    if min_speakers is not None:
+        raw_result.extra["min_speakers"] = min_speakers
+    if max_speakers is not None:
+        raw_result.extra["max_speakers"] = max_speakers
 
-    return ASRResponse(**response_data["raw"]), ASRResponse(**response_data["aligned"])
+    align_payload = ASRResponse(**raw_result.model_dump())
+    align_payload.extra = dict(align_payload.extra or {})
+
+    aligned_resp = await client.post(
+        ASR_URL,
+        params={"model_key": asr_model, "runner_index": 1, "diarize": True},
+        json=align_payload.model_dump(),
+    )
+    if aligned_resp.status_code != 200:
+        raise HTTPException(500, f"ASR alignment failed: {aligned_resp.text}")
+
+    aligned_result = ASRResponse(**aligned_resp.json())
+    return raw_result, aligned_result
 
 
 async def run_translation_step(
@@ -719,12 +736,12 @@ async def align_dubbed_audio(
 
     response = await client.post(
         ASR_URL,
-        params={"model_key": asr_model, "runner_index": 1},
+        params={"model_key": asr_model, "runner_index": 1, "diarize": False},
         json=tr_dict,
     )
     if response.status_code != 200:
         raise HTTPException(500, f"Second alignment failed: {response.text}")
-    return ASRResponse(**response.json()["aligned"])
+    return ASRResponse(**response.json())
 
 
 async def finalize_media(
@@ -1225,10 +1242,9 @@ async def dub(
                     dubbing_strategy,
                 )
 
-        allow_short = translation_strategy.split("_")[0] != "long"
         with step_timer.time("asr"):
             raw_asr_result, aligned_asr_result = await run_asr_step(
-                client, raw_audio_path, asr_model, source_lang, allow_short, min_speakers, max_speakers
+                client, raw_audio_path, asr_model, source_lang, min_speakers, max_speakers
             )
 
         source_lang = source_lang or raw_asr_result.language

@@ -24,11 +24,15 @@ def _load_model_config(model_key: str) -> Dict:
 
 
 def call_worker(model_key: str, payload: BaseModel, out_model: type[T], runner_index: int) -> T:
-    language = payload.language_hint if runner_index == 0 else payload.language
+    language = getattr(payload, "language_hint", None) if runner_index == 0 else getattr(payload, "language", None)
     venv_python, runner, selected_key = get_worker(model_key, runner_index, language)
 
     cfg = _load_model_config(selected_key)
-    payload.extra = dict(cfg.get("params", {}))
+    cfg_params = dict(cfg.get("params", {}))
+    existing_extra = getattr(payload, "extra", {}) or {}
+    merged_extra = {**cfg_params, **existing_extra}
+    if hasattr(payload, "extra"):
+        payload.extra = merged_extra
 
     cwd = runner.parent
     uv = UV_BIN
