@@ -82,10 +82,32 @@ async def synthesize_all(req: TTSRequest, out_format: str, default_voice: str, g
     # keep voice consistent per speaker+lang
     speaker_voice_map: dict[tuple[str | None, str], str] = {}
 
+    workspace_root = workspace_path.resolve()
+
     for i, segment in enumerate(req.segments):
         # Decide output file paths
-        mp3_path = workspace_path / f"seg-{i}.mp3"
-        wav_path = workspace_path / f"seg-{i}.wav"
+        if segment.legacy_audio_path:
+            final_path = Path(segment.legacy_audio_path)
+            if not final_path.is_absolute():
+                final_path = (workspace_path / final_path).resolve()
+            else:
+                final_path = final_path.resolve()
+            try:
+                final_path.relative_to(workspace_root)
+            except ValueError as exc:
+                raise RuntimeError(f"legacy_audio_path must reside inside workspace: {segment.legacy_audio_path}") from exc
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            if out_format == "wav":
+                wav_path = final_path
+                mp3_path = final_path.with_suffix(".mp3")
+            else:
+                mp3_path = final_path
+                wav_path = final_path.with_suffix(".wav")
+        else:
+            identifier = segment.segment_id or f"seg-{i}"
+            mp3_path = workspace_path / f"{identifier}.mp3"
+            wav_path = workspace_path / f"{identifier}.wav"
+            wav_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Choose voice
         key = (segment.speaker_id, segment.lang)
@@ -122,7 +144,8 @@ async def synthesize_all(req: TTSRequest, out_format: str, default_voice: str, g
             end=segment.end,
             audio_url=audio_url,
             speaker_id=segment.speaker_id,
-            lang=segment.lang
+            lang=segment.lang,
+            segment_id=segment.segment_id,
         ))
     return out
 

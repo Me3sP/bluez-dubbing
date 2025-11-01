@@ -86,6 +86,21 @@ def _synthesize(req: TTSRequest) -> TTSResponse:
         if audio_prompt and not Path(audio_prompt).exists():
             raise FileNotFoundError(f"Audio prompt file not found: {audio_prompt}")
 
+        if segment.legacy_audio_path:
+            output_file = Path(segment.legacy_audio_path)
+            if not output_file.is_absolute():
+                output_file = (workspace_path / output_file).resolve()
+            else:
+                output_file = output_file.resolve()
+            try:
+                output_file.relative_to(workspace_path.resolve())
+            except ValueError as exc:  # ensure overwrite stays inside workspace
+                raise RuntimeError(f"legacy_audio_path must reside inside workspace: {segment.legacy_audio_path}") from exc
+        else:
+            identifier = segment.segment_id or f"seg-{i}"
+            output_file = workspace_path / f"{identifier}.wav"
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+
         wav = model.generate(
             segment.text,
             language_id=segment.lang,
@@ -93,8 +108,6 @@ def _synthesize(req: TTSRequest) -> TTSResponse:
             **generation_kwargs,
         )
 
-        output_file = workspace_path / f"seg-{i}.wav"
-        output_file.parent.mkdir(parents=True, exist_ok=True)
         ta.save(str(output_file), wav, sample_rate)
 
         out.segments.append(
@@ -105,6 +118,7 @@ def _synthesize(req: TTSRequest) -> TTSResponse:
                 speaker_id=segment.speaker_id,
                 lang=segment.lang,
                 sample_rate=sample_rate,
+                segment_id=segment.segment_id,
             )
         )
         logger.info(

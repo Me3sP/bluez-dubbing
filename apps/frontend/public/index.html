@@ -860,6 +860,20 @@ input[type="checkbox"] {
             </div>
         </div>
 
+        <div class="review-card" id="tts-review" hidden>
+            <div class="review-header">
+                <h2>TTS Segment Review</h2>
+                <span class="review-status" id="tts-review-status">Pipeline paused for TTS review.</span>
+            </div>
+            <div class="review-body" id="tts-review-body">
+                <p class="review-instructions">Listen to each synthesized segment, adjust text or language, and regenerate as needed.</p>
+            </div>
+            <div class="review-actions">
+                <button type="button" id="tts-review-apply" class="primary">Apply changes &amp; continue</button>
+                <button type="button" id="tts-review-skip" class="secondary">Continue without changes</button>
+            </div>
+        </div>
+
         <div>
             <h2>Results</h2>
             <div id="results">No runs yet.</div>
@@ -924,6 +938,11 @@ const alignmentReviewApplyBtn = document.getElementById("alignment-review-apply"
 const alignmentReviewSkipBtn = document.getElementById("alignment-review-skip");
 const alignmentReviewAddBtn = document.getElementById("alignment-review-add");
 const alignmentSpeakerList = document.getElementById("speaker-list");
+const ttsReviewCard = document.getElementById("tts-review");
+const ttsReviewBody = document.getElementById("tts-review-body");
+const ttsReviewStatus = document.getElementById("tts-review-status");
+const ttsReviewApplyBtn = document.getElementById("tts-review-apply");
+const ttsReviewSkipBtn = document.getElementById("tts-review-skip");
 
 let optionsCache = null;
 let asrModels = [];
@@ -937,6 +956,7 @@ let latestResultPayload = null;
 let involveMode = false;
 let pendingTranscriptionReview = null;
 let pendingAlignmentReview = null;
+let pendingTTSReview = null;
 function readStoredBackendBase() {
     try {
         return window.localStorage?.getItem("bluez-backend-base") || null;
@@ -969,6 +989,8 @@ const ROUTES = {
     file: `${JOBS_BASE}/file`,
     reviewTranscription: `${JOBS_BASE}/transcription_review`,
     reviewAlignment: `${JOBS_BASE}/alignment_review`,
+    reviewTTS: `${JOBS_BASE}/tts_review`,
+    regenerateTTS: `${JOBS_BASE}/tts_review/regenerate`,
 };
 
 function resolveBackendUrl(url) {
@@ -1791,6 +1813,300 @@ async function submitAlignmentReview(applyChanges) {
     }
 }
 
+function hideTTSReview() {
+    pendingTTSReview = null;
+    if (ttsReviewBody) {
+        ttsReviewBody.innerHTML = '<p class="review-instructions">Listen to each synthesized segment, adjust text or language, and regenerate as needed.</p>';
+    }
+    if (ttsReviewStatus) {
+        ttsReviewStatus.textContent = "Pipeline paused for TTS review.";
+    }
+    if (ttsReviewApplyBtn) {
+        ttsReviewApplyBtn.disabled = false;
+    }
+    if (ttsReviewSkipBtn) {
+        ttsReviewSkipBtn.disabled = false;
+    }
+    if (ttsReviewCard) {
+        ttsReviewCard.hidden = true;
+    }
+}
+
+function showTTSReview(event) {
+    if (!ttsReviewCard || !ttsReviewBody) {
+        return;
+    }
+    const runId = event?.run_id || "";
+    const language = event?.language || "";
+    const segments = Array.isArray(event?.segments) ? [...event.segments] : [];
+    segments.sort((a, b) => {
+        const startA = typeof a.start === "number" ? a.start : 0;
+        const startB = typeof b.start === "number" ? b.start : 0;
+        return startA - startB;
+    });
+
+    pendingTTSReview = {
+        runId,
+        language,
+        segmentRefs: new Map(),
+    };
+
+    ttsReviewBody.innerHTML = "";
+
+    if (!segments.length) {
+        const emptyNote = document.createElement("p");
+        emptyNote.className = "review-instructions";
+        emptyNote.textContent = "No synthesized segments available for review.";
+        ttsReviewBody.appendChild(emptyNote);
+    } else {
+        segments.forEach((segment, index) => {
+            const segmentId = segment.segment_id || `seg-${index}`;
+            const wrapper = document.createElement("div");
+            wrapper.className = "review-segment";
+            wrapper.dataset.segmentId = segmentId;
+
+            const header = document.createElement("div");
+            header.className = "segment-meta";
+            const rangeLabel = `${formatTimestamp(segment.start)} – ${formatTimestamp(segment.end)}`;
+            const langLabel = segment.lang ? (toLanguageLabel(segment.lang) || segment.lang) : "auto";
+            header.textContent = `Segment ${index + 1} (${rangeLabel}) · ${langLabel}`;
+
+            const audioContainer = document.createElement("div");
+            audioContainer.className = "segment-audio";
+            let audioEl = null;
+            if (segment.audio && segment.audio.url) {
+                audioEl = document.createElement("audio");
+                audioEl.controls = true;
+                audioEl.preload = "metadata";
+                audioEl.src = resolveBackendUrl(segment.audio.url);
+                audioContainer.appendChild(audioEl);
+            } else {
+                const note = document.createElement("p");
+                note.className = "review-instructions";
+                note.textContent = "Audio preview unavailable.";
+                audioContainer.appendChild(note);
+            }
+
+            const textLabel = document.createElement("label");
+            textLabel.textContent = "Text";
+            const textarea = document.createElement("textarea");
+            textarea.dataset.segmentId = segmentId;
+            textarea.value = segment.text || "";
+            textarea.rows = Math.max(2, Math.min(6, Math.ceil((textarea.value.length || 1) / 60)));
+            textLabel.appendChild(textarea);
+
+            const controls = document.createElement("div");
+            controls.className = "segment-controls";
+
+            const langLabelEl = document.createElement("label");
+            langLabelEl.textContent = "Language";
+            const langInput = document.createElement("input");
+            langInput.type = "text";
+            langInput.dataset.segmentId = segmentId;
+            langInput.placeholder = "auto";
+            langInput.value = segment.lang || "";
+            langInput.setAttribute("list", "language-list");
+            langLabelEl.appendChild(langInput);
+
+            const regenBtn = document.createElement("button");
+            regenBtn.type = "button";
+            regenBtn.className = "secondary";
+            regenBtn.textContent = "Regenerate audio";
+            regenBtn.dataset.segmentId = segmentId;
+            regenBtn.addEventListener("click", () => {
+                regenerateTTSReviewSegment(segmentId);
+            });
+
+            const statusSpan = document.createElement("span");
+            statusSpan.className = "segment-status";
+            statusSpan.textContent = "Ready.";
+
+            controls.appendChild(langLabelEl);
+            controls.appendChild(regenBtn);
+            controls.appendChild(statusSpan);
+
+            wrapper.appendChild(header);
+            wrapper.appendChild(audioContainer);
+            wrapper.appendChild(textLabel);
+            wrapper.appendChild(controls);
+            ttsReviewBody.appendChild(wrapper);
+
+            pendingTTSReview.segmentRefs.set(segmentId, {
+                wrapper,
+                audioEl,
+                textArea: textarea,
+                langInput,
+                regenerateBtn: regenBtn,
+                statusLabel: statusSpan,
+            });
+        });
+    }
+
+    if (ttsReviewStatus) {
+        const label = language ? toLanguageLabel(language) || language : "";
+        ttsReviewStatus.textContent = label
+            ? `Pipeline paused for TTS review (${label}).`
+            : "Pipeline paused for TTS review.";
+    }
+    if (ttsReviewApplyBtn) {
+        ttsReviewApplyBtn.disabled = false;
+    }
+    if (ttsReviewSkipBtn) {
+        ttsReviewSkipBtn.disabled = false;
+    }
+    ttsReviewCard.hidden = false;
+    ttsReviewCard.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function updateTTSReviewSegment(segment) {
+    if (!pendingTTSReview || !segment || !segment.segment_id) {
+        return;
+    }
+    const refs = pendingTTSReview.segmentRefs?.get(segment.segment_id);
+    if (!refs) {
+        return;
+    }
+    if (typeof segment.text === "string" && refs.textArea) {
+        refs.textArea.value = segment.text;
+    }
+    if (refs.langInput) {
+        refs.langInput.value = segment.lang || "";
+    }
+    if (refs.audioEl && segment.audio && segment.audio.url) {
+        const nextSrc = resolveBackendUrl(segment.audio.url);
+        if (nextSrc) {
+            refs.audioEl.src = nextSrc;
+            refs.audioEl.load();
+        }
+    }
+    if (refs.statusLabel) {
+        refs.statusLabel.textContent = "Audio regenerated.";
+    }
+}
+
+async function regenerateTTSReviewSegment(segmentId) {
+    if (!pendingTTSReview || !segmentId) {
+        return;
+    }
+    const refs = pendingTTSReview.segmentRefs?.get(segmentId);
+    if (!refs) {
+        return;
+    }
+
+    const textValue = refs.textArea ? refs.textArea.value.trim() : "";
+    const langRaw = refs.langInput ? refs.langInput.value.trim() : "";
+    const langValue = resolveLanguageCode(langRaw) || langRaw;
+
+    if (refs.regenerateBtn) {
+        refs.regenerateBtn.disabled = true;
+    }
+    if (refs.statusLabel) {
+        refs.statusLabel.textContent = "Regenerating…";
+    }
+
+    try {
+        const response = await fetch(ROUTES.regenerateTTS, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                run_id: pendingTTSReview.runId,
+                language: pendingTTSReview.language || null,
+                segment_id: segmentId,
+                text: textValue,
+                lang: langValue || null,
+            }),
+        });
+        if (!response.ok) {
+            throw new Error(`Server responded with ${response.status}`);
+        }
+        const data = await response.json();
+        if (data.segment) {
+            updateTTSReviewSegment(data.segment);
+        }
+        appendLog(`🔄 Regenerated TTS segment ${segmentId}.`);
+    } catch (err) {
+        if (refs.statusLabel) {
+            refs.statusLabel.textContent = `Failed: ${err.message}`;
+        }
+        appendLog(`❌ Failed to regenerate TTS segment ${segmentId}: ${err.message}`);
+    } finally {
+        if (refs.regenerateBtn) {
+            refs.regenerateBtn.disabled = false;
+        }
+    }
+}
+
+async function submitTTSReview(applyChanges) {
+    if (!pendingTTSReview) {
+        return false;
+    }
+    const { runId, language } = pendingTTSReview;
+    if (!runId) {
+        return false;
+    }
+
+    const segments = [];
+    if (ttsReviewBody) {
+        ttsReviewBody.querySelectorAll(".review-segment").forEach(segmentEl => {
+            const segmentId = segmentEl.dataset.segmentId;
+            if (!segmentId) {
+                return;
+            }
+            const textArea = segmentEl.querySelector(`textarea[data-segment-id="${segmentId}"]`);
+            const langInput = segmentEl.querySelector(`input[data-segment-id="${segmentId}"]`);
+            const textValue = textArea ? textArea.value.trim() : "";
+            const langInputRaw = langInput ? langInput.value.trim() : "";
+            const resolvedLang = resolveLanguageCode(langInputRaw) || langInputRaw;
+            segments.push({
+                segment_id: segmentId,
+                text: textValue,
+                lang: resolvedLang || null,
+            });
+        });
+    }
+
+    if (ttsReviewApplyBtn) {
+        ttsReviewApplyBtn.disabled = true;
+    }
+    if (ttsReviewSkipBtn) {
+        ttsReviewSkipBtn.disabled = true;
+    }
+    if (ttsReviewStatus) {
+        ttsReviewStatus.textContent = "Submitting TTS review…";
+    }
+
+    try {
+        const response = await fetch(ROUTES.reviewTTS, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                run_id: runId,
+                language: language || null,
+                segments,
+            }),
+        });
+        if (!response.ok) {
+            throw new Error(`Server responded with ${response.status}`);
+        }
+        appendLog(applyChanges ? "🎧 Applied TTS adjustments." : "👍 Approved TTS segments without changes.");
+        hideTTSReview();
+        setStatus("Running", "running");
+        return true;
+    } catch (err) {
+        if (ttsReviewStatus) {
+            ttsReviewStatus.textContent = `Failed to submit TTS review: ${err.message}`;
+        }
+        if (ttsReviewApplyBtn) {
+            ttsReviewApplyBtn.disabled = false;
+        }
+        if (ttsReviewSkipBtn) {
+            ttsReviewSkipBtn.disabled = false;
+        }
+        appendLog(`❌ Failed to submit TTS review: ${err.message}`);
+        return false;
+    }
+}
+
 function updateSourcePreview(src, label, { keepExisting = false, objectUrl = null } = {}) {
     if (!keepExisting && sourceObjectUrl) {
         URL.revokeObjectURL(sourceObjectUrl);
@@ -2006,7 +2322,7 @@ if (involveToggleBtn) {
     involveToggleBtn.addEventListener("click", () => {
         setInvolveMode(!involveMode);
         appendLog(involveMode
-            ? "🛠 Involve mode enabled. The pipeline will pause for transcription review."
+            ? "🛠 Involve mode enabled. The pipeline will pause at different steps for manual review."
             : "🏃 Involve mode disabled. The pipeline will run uninterrupted.");
     });
 }
@@ -2025,6 +2341,19 @@ if (transcriptionReviewSkipBtn) {
 
 hideTranscriptionReview();
 hideAlignmentReview();
+hideTTSReview();
+
+if (ttsReviewApplyBtn) {
+    ttsReviewApplyBtn.addEventListener("click", () => {
+        submitTTSReview(true);
+    });
+}
+
+if (ttsReviewSkipBtn) {
+    ttsReviewSkipBtn.addEventListener("click", () => {
+        submitTTSReview(false);
+    });
+}
 
 if (alignmentReviewApplyBtn) {
     alignmentReviewApplyBtn.addEventListener("click", () => {
@@ -2560,6 +2889,7 @@ function handleEvent(event) {
             updateResultPreview(null, "Cancelled.");
             hideTranscriptionReview();
             hideAlignmentReview();
+            hideTTSReview();
             hideInterruptButton();
             activeRunId = "";
             break;
@@ -2568,6 +2898,7 @@ function handleEvent(event) {
             setStatus("Done", "success");
             hideTranscriptionReview();
             hideAlignmentReview();
+            hideTTSReview();
             renderResults(event.result);
             {
                 const token = event.result?.upload_token || "";
@@ -2601,6 +2932,8 @@ function handleEvent(event) {
                 setStatus("Awaiting transcription review", "paused");
             } else if (event.event === "awaiting_alignment_review") {
                 setStatus("Awaiting alignment review", "paused");
+            } else if (event.event === "awaiting_tts_review") {
+                setStatus("Awaiting TTS review", "paused");
             } else {
                 appendLog(`ℹ️ ${event.event || "status"}`);
             }
@@ -2608,6 +2941,7 @@ function handleEvent(event) {
         case "transcription_review":
             appendLog("✍️ Awaiting transcription review.");
             setStatus("Awaiting review", "paused");
+            hideTTSReview();
             showTranscriptionReview(event);
             break;
         case "transcription_review_complete":
@@ -2619,12 +2953,30 @@ function handleEvent(event) {
             appendLog("✍️ Awaiting alignment review.");
             setStatus("Awaiting alignment review", "paused");
             hideTranscriptionReview();
+            hideTTSReview();
             showAlignmentReview(event);
             break;
         case "alignment_review_complete":
             appendLog("✅ Alignment review submitted. Resuming pipeline.");
             setStatus("Running", "running");
             hideAlignmentReview();
+            break;
+        case "tts_review":
+            appendLog("🎧 Awaiting TTS review.");
+            setStatus("Awaiting TTS review", "paused");
+            hideTranscriptionReview();
+            hideAlignmentReview();
+            showTTSReview(event);
+            break;
+        case "tts_review_complete":
+            appendLog("✅ TTS review submitted. Resuming pipeline.");
+            setStatus("Running", "running");
+            hideTTSReview();
+            break;
+        case "tts_review_regenerated":
+            if (event.segment) {
+                updateTTSReviewSegment(event.segment);
+            }
             break;
         case "source_preview":
             if (event.preview && event.preview.url) {
@@ -2637,6 +2989,7 @@ function handleEvent(event) {
             setStatus("Error", "error");
             hideTranscriptionReview();
             hideAlignmentReview();
+            hideTTSReview();
             hideInterruptButton();
             activeRunId = "";
             break;
@@ -2645,6 +2998,7 @@ function handleEvent(event) {
             hideInterruptButton();
             hideTranscriptionReview();
             hideAlignmentReview();
+            hideTTSReview();
             activeRunId = "";
             break;
         default:

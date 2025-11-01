@@ -25,6 +25,7 @@ class Segment(BaseModel):
     speaker_id: str | None = None
     lang: str | None = None
     audio_url: str | None = None  # Optional field for audio link to that segment
+    segment_id: str | None = None
 
 # will serve for both ASR and Translation responses
 class ASRResponse(BaseModel):
@@ -53,6 +54,8 @@ class SegmentAudioIn(BaseModel):
     speaker_id: str | None = None
     lang: str | None = None
     audio_prompt_url: str | None = None
+    segment_id: str | None = None
+    legacy_audio_path: str | None = None
 
 class SegmentAudioOut(BaseModel):
     start: float | None = None
@@ -61,6 +64,8 @@ class SegmentAudioOut(BaseModel):
     speaker_id: str | None = None
     lang: str | None = None
     sample_rate: int | None = None
+    segment_id: str | None = None
+
 class TTSRequest(BaseModel):
     segments: List[SegmentAudioIn] = Field(default_factory=list)
     workspace: str | None = None

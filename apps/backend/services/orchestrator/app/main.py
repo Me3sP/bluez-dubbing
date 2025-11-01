@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import contextvars
 import hashlib
@@ -16,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import httpx
 
@@ -33,6 +35,7 @@ from fastapi.params import Param
 from common_schemas.models import (
     ASRRequest,
     ASRResponse,
+    Segment,
     SegmentAudioIn,
     TTSRequest,
     TTSResponse,
@@ -115,6 +118,8 @@ PROGRESS_REPORTER: contextvars.ContextVar[Optional[Callable[[Dict[str, Any]], No
 ACTIVE_JOBS: Dict[str, asyncio.Task] = {}
 TRANSCRIPTION_REVIEW_WAITERS: Dict[str, asyncio.Future[ASRResponse]] = {}
 ALIGNMENT_REVIEW_WAITERS: Dict[str, asyncio.Future[ASRResponse]] = {}
+TTS_REVIEW_WAITERS: Dict[tuple[str, str], asyncio.Future[bool]] = {}
+TTS_REVIEW_SESSIONS: Dict[tuple[str, str], "TTSReviewSession"] = {}
 
 app.mount("/outs", StaticFiles(directory=str(OUTS), check_dir=False), name="outs")
 
@@ -186,7 +191,7 @@ async def wait_for_alignment_review(run_id: str) -> ASRResponse:
             future.cancel()
 
 
-def build_file_payload(path_str: str | Path | None) -> Optional[Dict[str, str]]:
+def build_file_payload(path_str: str | Path | None, *, cache_bust: bool = False) -> Optional[Dict[str, str]]:
     if not path_str:
         return None
     resolved = Path(path_str).resolve()
@@ -197,7 +202,36 @@ def build_file_payload(path_str: str | Path | None) -> Optional[Dict[str, str]]:
     except ValueError:
         return None
     query = urllib.parse.quote(str(resolved), safe="")
-    return {"path": str(resolved), "url": f"{FILE_ROUTE}?path={query}"}
+    url = f"{FILE_ROUTE}?path={query}"
+    if cache_bust:
+        url = f"{url}&v={uuid.uuid4().hex}"
+    return {"path": str(resolved), "url": url}
+
+
+def normalize_audio_url(value: str | List[str] | None) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return value[0] if value else None
+    return value
+
+
+def serialize_tts_review_segment(state: TTSReviewSegmentState) -> Dict[str, Any]:
+    audio_payload = build_file_payload(state.audio_url, cache_bust=True)
+    return {
+        "segment_id": state.segment_id,
+        "start": state.start,
+        "end": state.end,
+        "speaker_id": state.speaker_id,
+        "text": state.text,
+        "lang": state.lang,
+        "audio": audio_payload,
+        "sample_rate": state.sample_rate,
+    }
+
+
+def tts_session_key(run_id: str, language: Optional[str]) -> tuple[str, str]:
+    return (run_id, language or "__default__")
 
 
 def normalize_language_codes(languages: Iterable[Optional[str]]) -> List[str]:
@@ -214,6 +248,12 @@ def normalize_language_codes(languages: Iterable[Optional[str]]) -> List[str]:
         seen.add(candidate)
         normalized.append(candidate)
     return normalized
+
+
+def ensure_segment_ids(response: ASRResponse) -> None:
+    for segment in response.segments:
+        if not segment.segment_id:
+            segment.segment_id = str(uuid.uuid4())
 
 
 def unwrap_param(value: Any) -> Any:
@@ -356,6 +396,30 @@ class WorkspaceManager:
     def temp_file(self, suffix=""):
         """Return a temporary file path for ephemeral use."""
         return tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+
+@dataclass
+class TTSReviewSegmentState:
+    segment_id: str
+    start: float | None
+    end: float | None
+    speaker_id: str | None
+    text: str
+    lang: str | None
+    audio_url: str
+    sample_rate: int | None
+
+
+@dataclass
+class TTSReviewSession:
+    run_id: str
+    language: str
+    tts_model: str
+    workspace: Path
+    translation: ASRResponse
+    tts_response: TTSResponse
+    segments: Dict[str, TTSReviewSegmentState]
+    lock: asyncio.Lock
+    future: asyncio.Future[bool]
 
 
 async def run_in_thread(func, *args, **kwargs):
@@ -693,6 +757,7 @@ async def synthesize_tts(
     target_lang: str,
     workspace_path: Path,
 ) -> TTSResponse:
+    ensure_segment_ids(tr_result)
     tts_segments = [
         SegmentAudioIn(
             start=seg.start,
@@ -701,6 +766,7 @@ async def synthesize_tts(
             speaker_id=seg.speaker_id,
             lang=tr_result.language or target_lang,
             audio_prompt_url=seg.audio_url if seg.speaker_id else None,
+            segment_id=seg.segment_id,
         )
         for seg in tr_result.segments
     ]
@@ -710,6 +776,149 @@ async def synthesize_tts(
     if response.status_code != 200:
         raise HTTPException(500, f"TTS failed: {response.text}")
     return TTSResponse(**response.json())
+
+
+async def run_tts_review_session(
+    run_id: str,
+    language: Optional[str],
+    tts_model: str,
+    workspace_path: Path,
+    translation: ASRResponse,
+    tts_result: TTSResponse,
+) -> None:
+    key = tts_session_key(run_id, language)
+    if key in TTS_REVIEW_SESSIONS:
+        raise HTTPException(409, "TTS review already in progress for this run and language.")
+
+    ensure_segment_ids(translation)
+    translation_map: Dict[str, Segment] = {seg.segment_id: seg for seg in translation.segments if seg.segment_id}
+    segments_state: Dict[str, TTSReviewSegmentState] = {}
+
+    for seg_audio in tts_result.segments:
+        if not seg_audio.segment_id:
+            seg_audio.segment_id = str(uuid.uuid4())
+        seg_id = seg_audio.segment_id
+        segment = translation_map.get(seg_id)
+        if segment is None:
+            continue
+        audio_url = normalize_audio_url(seg_audio.audio_url)
+        if not audio_url:
+            continue
+        if not segment.lang and language:
+            segment.lang = language
+        segments_state[seg_id] = TTSReviewSegmentState(
+            segment_id=seg_id,
+            start=segment.start,
+            end=segment.end,
+            speaker_id=segment.speaker_id,
+            text=segment.text,
+            lang=segment.lang or language,
+            audio_url=audio_url,
+            sample_rate=seg_audio.sample_rate,
+        )
+
+    if not segments_state:
+        return
+
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[bool] = loop.create_future()
+    session = TTSReviewSession(
+        run_id=run_id,
+        language=language or "",
+        tts_model=tts_model,
+        workspace=workspace_path,
+        translation=translation,
+        tts_response=tts_result,
+        segments=segments_state,
+        lock=asyncio.Lock(),
+        future=future,
+    )
+
+    TTS_REVIEW_SESSIONS[key] = session
+    TTS_REVIEW_WAITERS[key] = future
+
+    emit_progress(
+        {
+            "type": "tts_review",
+            "run_id": run_id,
+            "language": language,
+            "segments": [serialize_tts_review_segment(state) for state in segments_state.values()],
+        }
+    )
+    emit_progress({"type": "status", "event": "awaiting_tts_review"})
+
+    try:
+        await future
+    finally:
+        stored_waiter = TTS_REVIEW_WAITERS.get(key)
+        if stored_waiter is future and not future.done():
+            future.cancel()
+        TTS_REVIEW_WAITERS.pop(key, None)
+        TTS_REVIEW_SESSIONS.pop(key, None)
+
+
+async def regenerate_tts_segment_audio(
+    session: TTSReviewSession,
+    segment_id: str,
+    text: str,
+    lang: Optional[str],
+) -> TTSReviewSegmentState:
+    async with session.lock:
+        state = session.segments.get(segment_id)
+        if state is None:
+            raise HTTPException(404, "Segment not found in current TTS review session.")
+
+        translation_segment = next((seg for seg in session.translation.segments if seg.segment_id == segment_id), None)
+        if translation_segment is None:
+            raise HTTPException(404, "Segment not available for regeneration.")
+
+        updated_text = text.strip()
+        translation_segment.text = updated_text
+        desired_lang = (lang or translation_segment.lang or session.language or state.lang)
+        translation_segment.lang = desired_lang
+        state.text = translation_segment.text
+        state.lang = translation_segment.lang
+
+        segment_input = SegmentAudioIn(
+            start=translation_segment.start,
+            end=translation_segment.end,
+            text=translation_segment.text,
+            speaker_id=translation_segment.speaker_id,
+            lang=translation_segment.lang,
+            audio_prompt_url=translation_segment.audio_url if translation_segment.audio_url else None,
+            segment_id=segment_id,
+            legacy_audio_path=state.audio_url,
+        )
+
+        client = get_http_client()
+        tts_req = TTSRequest(
+            segments=[segment_input],
+            workspace=str(session.workspace),
+            language=translation_segment.lang or session.language,
+        )
+        response = await client.post(TTS_URL, params={"model_key": session.tts_model}, json=tts_req.model_dump())
+        if response.status_code != 200:
+            raise HTTPException(500, f"TTS regeneration failed: {response.text}")
+
+        regenerated = TTSResponse(**response.json())
+        if not regenerated.segments:
+            raise HTTPException(500, "TTS regeneration yielded no audio segments.")
+        regenerated_segment = regenerated.segments[0]
+        audio_url = normalize_audio_url(regenerated_segment.audio_url) or state.audio_url
+
+        state.audio_url = audio_url
+        state.sample_rate = regenerated_segment.sample_rate
+
+        for existing in session.tts_response.segments:
+            if existing.segment_id == segment_id:
+                existing.audio_url = regenerated_segment.audio_url
+                existing.lang = regenerated_segment.lang
+                existing.sample_rate = regenerated_segment.sample_rate
+                break
+        else:
+            session.tts_response.segments.append(regenerated_segment)
+
+        return state
 
 
 async def trim_tts_segments(tts_result: TTSResponse, vad_dir: Path) -> TTSResponse:
@@ -894,6 +1103,26 @@ class AlignmentReviewRequest(BaseModel):
     alignment: ASRResponse
 
 
+class TTSReviewSegmentUpdate(BaseModel):
+    segment_id: str
+    text: str
+    lang: Optional[str] = None
+
+
+class TTSReviewRequest(BaseModel):
+    run_id: str
+    language: Optional[str] = None
+    segments: List[TTSReviewSegmentUpdate] = Field(default_factory=list)
+
+
+class TTSRegenerateRequest(BaseModel):
+    run_id: str
+    language: Optional[str] = None
+    segment_id: str
+    text: str
+    lang: Optional[str] = None
+
+
 @app.post(f"{JOBS_PREFIX}/transcription_review")
 async def pipeline_submit_transcription_review(review: TranscriptionReviewRequest) -> JSONResponse:
     run_id = (review.run_id or "").strip()
@@ -920,6 +1149,81 @@ async def pipeline_submit_alignment_review(review: AlignmentReviewRequest) -> JS
         raise HTTPException(409, "Alignment review already submitted for this run.")
     future.set_result(review.alignment)
     return JSONResponse({"status": "accepted"})
+
+
+@app.post(f"{JOBS_PREFIX}/tts_review")
+async def pipeline_submit_tts_review(review: TTSReviewRequest) -> JSONResponse:
+    run_id = (review.run_id or "").strip()
+    if not run_id:
+        raise HTTPException(400, "run_id is required")
+    key = tts_session_key(run_id, review.language)
+    session = TTS_REVIEW_SESSIONS.get(key)
+    if session is None:
+        raise HTTPException(404, "No pending TTS review for this run and language.")
+    future = session.future
+    if future.done():
+        raise HTTPException(409, "TTS review already submitted for this language.")
+
+    updates = {item.segment_id: item for item in review.segments}
+    async with session.lock:
+        for segment in session.translation.segments:
+            if not segment.segment_id:
+                continue
+            update = updates.get(segment.segment_id)
+            if not update:
+                continue
+            segment.text = update.text.strip()
+            if update.lang:
+                segment.lang = update.lang
+            state = session.segments.get(segment.segment_id)
+            if state:
+                state.text = segment.text
+                state.lang = segment.lang or state.lang
+        for audio_segment in session.tts_response.segments:
+            if not audio_segment.segment_id:
+                continue
+            update = updates.get(audio_segment.segment_id)
+            if not update:
+                continue
+            if update.lang:
+                audio_segment.lang = update.lang
+    if not future.done():
+        future.set_result(True)
+    emit_progress(
+        {
+            "type": "tts_review_complete",
+            "run_id": run_id,
+            "language": review.language,
+        }
+    )
+    return JSONResponse({"status": "accepted"})
+
+
+@app.post(f"{JOBS_PREFIX}/tts_review/regenerate")
+async def pipeline_regenerate_tts_segment(request: TTSRegenerateRequest) -> JSONResponse:
+    run_id = (request.run_id or "").strip()
+    if not run_id:
+        raise HTTPException(400, "run_id is required")
+    if not request.segment_id:
+        raise HTTPException(400, "segment_id is required")
+    key = tts_session_key(run_id, request.language)
+    session = TTS_REVIEW_SESSIONS.get(key)
+    if session is None:
+        raise HTTPException(404, "No pending TTS review for this run and language.")
+    if session.future.done():
+        raise HTTPException(409, "TTS review already submitted for this language.")
+
+    state = await regenerate_tts_segment_audio(session, request.segment_id, request.text, request.lang)
+    segment_payload = serialize_tts_review_segment(state)
+    emit_progress(
+        {
+            "type": "tts_review_regenerated",
+            "run_id": run_id,
+            "language": request.language,
+            "segment": segment_payload,
+        }
+    )
+    return JSONResponse({"status": "ok", "segment": segment_payload})
 
 
 @app.post(RUN_ROUTE)
@@ -1594,6 +1898,8 @@ async def dub(
                 else:
                     tr_aligned_origin_path = ""
 
+                ensure_segment_ids(tr_result)
+
                 tr_result.audio_url = str(vocals_path) if vocals_path else str(raw_audio_path) # use vocal if available because it's cleaner for cloning
 
                 if workspace.persist_intermediate:
@@ -1610,6 +1916,7 @@ async def dub(
                         one_per_speaker=True,
                     )
                 tr_result_local = ASRResponse(**updated)
+                ensure_segment_ids(tr_result_local)
 
                 if workspace.persist_intermediate:
                     tts_output_dir = workspace.ensure_dir(f"tts/{lang}")
@@ -1621,6 +1928,20 @@ async def dub(
                     f"tts/{lang}/tts_result.json",
                     tts_result.model_dump(),
                 )
+
+                for seg in tts_result.segments:
+                    if not seg.segment_id:
+                        seg.segment_id = str(uuid.uuid4())
+
+                if involve_mode:
+                    await run_tts_review_session(
+                        run_id=run_id,
+                        language=lang,
+                        tts_model=tts_model_key,
+                        workspace_path=tts_output_dir,
+                        translation=tr_result_local,
+                        tts_result=tts_result,
+                    )
 
                 if perform_vad_trimming:
                     if workspace.persist_intermediate:
