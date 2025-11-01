@@ -117,9 +117,11 @@ PROGRESS_REPORTER: contextvars.ContextVar[Optional[Callable[[Dict[str, Any]], No
 
 ACTIVE_JOBS: Dict[str, asyncio.Task] = {}
 TRANSCRIPTION_REVIEW_WAITERS: Dict[str, asyncio.Future[ASRResponse]] = {}
+TRANSCRIPTION_REVIEW_SESSIONS: Dict[str, "TranscriptionReviewSession"] = {}
 ALIGNMENT_REVIEW_WAITERS: Dict[str, asyncio.Future[ASRResponse]] = {}
 TTS_REVIEW_WAITERS: Dict[tuple[str, str], asyncio.Future[bool]] = {}
 TTS_REVIEW_SESSIONS: Dict[tuple[str, str], "TTSReviewSession"] = {}
+TRANSCRIPTION_SEGMENT_TOLERANCE = 0.25
 
 app.mount("/outs", StaticFiles(directory=str(OUTS), check_dir=False), name="outs")
 
@@ -177,6 +179,7 @@ async def wait_for_transcription_review(run_id: str) -> ASRResponse:
         stored = TRANSCRIPTION_REVIEW_WAITERS.pop(run_id, None)
         if stored is future and not future.done():
             future.cancel()
+        TRANSCRIPTION_REVIEW_SESSIONS.pop(run_id, None)
 
 
 async def wait_for_alignment_review(run_id: str) -> ASRResponse:
@@ -421,6 +424,15 @@ class TTSReviewSession:
     lock: asyncio.Lock
     future: asyncio.Future[bool]
     languages: List[str]
+
+
+@dataclass
+class TranscriptionReviewSession:
+    run_id: str
+    audio_duration: float
+    audio_path: Optional[str]
+    languages: List[str]
+    tolerance: float
 
 
 async def run_in_thread(func, *args, **kwargs):
@@ -678,6 +690,7 @@ async def run_asr_step(
         raise HTTPException(500, f"ASR transcription failed: {raw_resp.text}")
 
     raw_result = ASRResponse(**raw_resp.json())
+    ensure_segment_ids(raw_result)
     if not raw_result.audio_url:
         raw_result.audio_url = str(raw_audio_path)
     raw_result.extra = dict(raw_result.extra or {})
@@ -694,6 +707,7 @@ async def run_asr_step(
     align_payload.extra["enable_diarization"] = diarize
 
     aligned_result = await align_asr_transcription(client, asr_model, align_payload, diarize=diarize)
+    ensure_segment_ids(aligned_result)
     return raw_result, aligned_result
 
 
@@ -1142,6 +1156,76 @@ async def pipeline_submit_transcription_review(review: TranscriptionReviewReques
         raise HTTPException(404, "No pending transcription review for this run.")
     if future.done():
         raise HTTPException(409, "Transcription review already submitted for this run.")
+    session = TRANSCRIPTION_REVIEW_SESSIONS.get(run_id)
+    audio_duration = session.audio_duration if session else None
+    tolerance = session.tolerance if session else TRANSCRIPTION_SEGMENT_TOLERANCE
+    audio_candidates: List[str] = []
+    if session and session.audio_path:
+        audio_candidates.append(session.audio_path)
+    if review.transcription.audio_url:
+        audio_candidates.append(review.transcription.audio_url)
+    for candidate in audio_candidates:
+        candidate_str = (candidate or "").strip()
+        if not candidate_str:
+            continue
+        candidate_path = Path(candidate_str)
+        if not candidate_path.exists():
+            continue
+        try:
+            duration_candidate = get_audio_duration(candidate_path)
+        except Exception:
+            continue
+        if duration_candidate and duration_candidate > 0:
+            audio_duration = duration_candidate
+            break
+    if audio_duration is not None and audio_duration <= tolerance:
+        audio_duration = None
+    allowed_languages = set((session.languages or []) if session else [])
+    segments = review.transcription.segments or []
+    sanitized: List[Segment] = []
+    for segment in segments:
+        start_raw = segment.start if segment.start is not None else 0.0
+        end_raw = segment.end if segment.end is not None else start_raw
+        try:
+            start = float(start_raw)
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"Invalid start time for segment {segment.segment_id or '?'}")
+        try:
+            end = float(end_raw)
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"Invalid end time for segment {segment.segment_id or '?'}")
+        if audio_duration is not None:
+            if start < -tolerance or start > audio_duration + tolerance:
+                raise HTTPException(
+                    400,
+                    f"Segment start {start:.3f}s exceeds audio bounds (duration {audio_duration:.3f}s).",
+                )
+            if end < -tolerance or end > audio_duration + tolerance:
+                raise HTTPException(
+                    400,
+                    f"Segment end {end:.3f}s exceeds audio bounds (duration {audio_duration:.3f}s).",
+                )
+            start = max(0.0, min(start, audio_duration + tolerance))
+            end = max(0.0, min(end, audio_duration + tolerance))
+        if end < start:
+            if end + tolerance >= start:
+                end = start
+            else:
+                raise HTTPException(400, f"Segment end {end:.3f}s precedes start {start:.3f}s.")
+        text = (segment.text or "").strip()
+        lang = (segment.lang or "").strip().lower() or None
+        if lang:
+            allowed_languages.add(lang)
+        segment.start = round(start, 3)
+        segment.end = round(end, 3)
+        segment.text = text
+        segment.lang = lang
+        segment.words = None
+        sanitized.append(segment)
+    sanitized.sort(key=lambda seg: seg.start if seg.start is not None else 0.0)
+    review.transcription.segments = sanitized
+    ensure_segment_ids(review.transcription)
+    TRANSCRIPTION_REVIEW_SESSIONS.pop(run_id, None)
     future.set_result(review.transcription)
     return JSONResponse({"status": "accepted"})
 
@@ -1636,10 +1720,13 @@ async def dub(
     raw_audio_path = preprocessing_dir / "raw_audio.wav"
 
     cancelled = False
+    raw_audio_duration: float = 0.0
 
     try:
         with step_timer.time("extract_audio"):
             await extract_audio_to_workspace(str(resolved_video_path), raw_audio_path)
+
+        raw_audio_duration = get_audio_duration(raw_audio_path)
 
         vocals_path: Optional[Path] = None
         background_path: Optional[Path] = None
@@ -1670,10 +1757,33 @@ async def dub(
         asr_raw_path = ""
 
         if involve_mode:
+            languages_set: set[str] = set()
+            for worker in ASR_WORKERS.values():
+                worker_langs = getattr(worker, "languages", None)
+                if worker_langs:
+                    for lang in worker_langs:
+                        normalized = (lang or "").strip().lower()
+                        if normalized:
+                            languages_set.add(normalized)
+            for segment in raw_asr_result.segments:
+                normalized = (segment.lang or "").strip().lower()
+                if normalized:
+                    languages_set.add(normalized)
+            available_languages = sorted(languages_set)
+            TRANSCRIPTION_REVIEW_SESSIONS[run_id] = TranscriptionReviewSession(
+                run_id=run_id,
+                audio_duration=raw_audio_duration,
+                audio_path=raw_asr_result.audio_url or str(raw_audio_path),
+                languages=available_languages,
+                tolerance=TRANSCRIPTION_SEGMENT_TOLERANCE,
+            )
             emit_progress({
                 "type": "transcription_review",
                 "run_id": run_id,
                 "raw": original_raw_dump,
+                "languages": available_languages,
+                "duration": raw_audio_duration,
+                "tolerance": TRANSCRIPTION_SEGMENT_TOLERANCE,
                 "artifacts": {"raw_path": asr_raw_path},
             })
             emit_progress({"type": "status", "event": "awaiting_transcription_review"})
@@ -1869,8 +1979,6 @@ async def dub(
         else:
             if not languages_to_process:
                 raise HTTPException(400, "At least one target language must be specified for dubbing")
-
-            raw_audio_duration = get_audio_duration(raw_audio_path)
 
             async def process_language(lang: str) -> Tuple[str, Dict[str, Any]]:
                 lang_suffix = f"[{lang}]"

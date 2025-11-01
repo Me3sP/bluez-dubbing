@@ -1015,64 +1015,29 @@ def overlay_on_background(dubbed_segments: List[Dict],
         )
 
 def get_audio_duration(path: Path | str) -> float:
-    """Get audio duration in seconds with high precision, cached."""
+    """Get audio duration in seconds (cached, ffprobe-based)."""
     resolved = str(Path(path))
     with _duration_cache_lock:
         cached = _duration_cache.get(resolved)
-    if cached is not None:
-        return cached
+        if cached is not None:
+            return cached
 
-    duration: Optional[float] = None
-    suffix = Path(resolved).suffix.lower()
-
-    def probe_via_ffprobe() -> Optional[float]:
-        try:
-            out = subprocess.check_output(
-                [
-                    "ffprobe",
-                    "-v",
-                    "error",
-                    "-show_entries",
-                    "format=duration",
-                    "-of",
-                    "default=noprint_wrappers=1:nokey=1",
-                    resolved,
-                ],
-                text=True,
-            ).strip()
-        except subprocess.CalledProcessError:
-            return None
-        try:
-            return float(out)
-        except (TypeError, ValueError):
-            return None
-
-    prefer_ffprobe = suffix in _VIDEO_EXTENSIONS or suffix not in _AUDIO_EXTENSIONS
-
-    if not prefer_ffprobe:
-        try:
-            info = sf.info(resolved)
-            if info.frames and info.samplerate:
-                duration = info.frames / float(info.samplerate)
-        except Exception:
-            duration = None
-
-        if duration is None:
-            try:
-                ta_info = torchaudio.info(resolved)
-                if ta_info.num_frames and ta_info.sample_rate:
-                    duration = ta_info.num_frames / float(ta_info.sample_rate)
-            except Exception:
-                duration = None
-
-        # torchaudio can return extremely short durations for some container formats;
-        # fall back to ffprobe if the figure looks suspicious.
-        if duration is None or duration <= 0.05:
-            duration = probe_via_ffprobe()
-    else:
-        duration = probe_via_ffprobe()
-
-    if duration is None:
+    try:
+        out = subprocess.check_output(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                resolved,
+            ],
+            text=True,
+        ).strip()
+        duration = float(out)
+    except (subprocess.CalledProcessError, ValueError, TypeError):
         raise RuntimeError(f"Unable to determine duration for {resolved}")
 
     with _duration_cache_lock:

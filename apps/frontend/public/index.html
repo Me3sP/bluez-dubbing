@@ -840,6 +840,7 @@ input[type="checkbox"] {
                 <p class="review-instructions">Review and adjust each segment before continuing.</p>
             </div>
             <div class="review-actions">
+                <button type="button" id="transcription-review-add" class="secondary">Add segment</button>
                 <button type="button" id="transcription-review-apply" class="primary">Apply corrections &amp; continue</button>
                 <button type="button" id="transcription-review-skip" class="secondary">Continue without changes</button>
             </div>
@@ -931,6 +932,7 @@ const transcriptionReviewBody = document.getElementById("transcription-review-bo
 const transcriptionReviewStatus = document.getElementById("transcription-review-status");
 const transcriptionReviewApplyBtn = document.getElementById("transcription-review-apply");
 const transcriptionReviewSkipBtn = document.getElementById("transcription-review-skip");
+const transcriptionReviewAddBtn = document.getElementById("transcription-review-add");
 const alignmentReviewCard = document.getElementById("alignment-review");
 const alignmentReviewBody = document.getElementById("alignment-review-body");
 const alignmentReviewStatus = document.getElementById("alignment-review-status");
@@ -1197,6 +1199,26 @@ function formatTimestamp(value) {
     return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
+function createSegmentId() {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+        return crypto.randomUUID();
+    }
+    return `seg-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function markInputValidity(input, isValid, message = "") {
+    if (!input) return;
+    if (isValid) {
+        input.removeAttribute("data-error");
+        input.style.borderColor = "";
+        input.title = "";
+    } else {
+        input.setAttribute("data-error", "true");
+        input.style.borderColor = "#f87171";
+        input.title = message || "Invalid value";
+    }
+}
+
 function hideTranscriptionReview() {
     pendingTranscriptionReview = null;
     if (transcriptionReviewBody) {
@@ -1211,6 +1233,10 @@ function hideTranscriptionReview() {
     if (transcriptionReviewSkipBtn) {
         transcriptionReviewSkipBtn.disabled = false;
     }
+    if (transcriptionReviewAddBtn) {
+        transcriptionReviewAddBtn.disabled = false;
+        transcriptionReviewAddBtn.hidden = true;
+    }
     if (transcriptionReviewCard) {
         transcriptionReviewCard.hidden = true;
     }
@@ -1221,44 +1247,59 @@ function showTranscriptionReview(event) {
         return;
     }
     const rawPayload = event?.raw || {};
+    const runId = event?.run_id || "";
+    const durationValue = typeof event?.duration === "number" ? event.duration : null;
+    const toleranceValue =
+        typeof event?.tolerance === "number" && Number.isFinite(event.tolerance) ? event.tolerance : 0.25;
+    let supportedLangs = Array.isArray(event?.languages)
+        ? Array.from(
+              new Set(
+                  event.languages
+                      .map(lang => (typeof lang === "string" ? lang.trim().toLowerCase() : ""))
+                      .filter(Boolean),
+              ),
+          )
+        : [];
+    supportedLangs.forEach(code => registerLanguage(code));
+    supportedLangs = supportedLangs.sort((a, b) => {
+        const labelA = toLanguageLabel(a) || a;
+        const labelB = toLanguageLabel(b) || b;
+        return labelA.localeCompare(labelB);
+    });
     pendingTranscriptionReview = {
-        runId: event?.run_id || "",
+        runId,
         payload: clonePayload(rawPayload),
+        duration: durationValue,
+        languages: supportedLangs,
+        tolerance: toleranceValue,
     };
 
-    transcriptionReviewBody.innerHTML = "";
-    const intro = document.createElement("p");
-    intro.className = "review-instructions";
-    intro.textContent = "Edit any segment text below, then continue.";
-    transcriptionReviewBody.appendChild(intro);
-
-    const segments = Array.isArray(rawPayload.segments) ? rawPayload.segments : [];
-    if (!segments.length) {
-        const emptyNote = document.createElement("p");
-        emptyNote.className = "review-instructions";
-        emptyNote.textContent = "No segments returned by the transcription step.";
-        transcriptionReviewBody.appendChild(emptyNote);
-    } else {
-        segments.forEach((segment, index) => {
-            const wrapper = document.createElement("div");
-            wrapper.className = "review-segment";
-
-            const meta = document.createElement("div");
-            meta.className = "segment-meta";
-            meta.textContent = `Segment ${index + 1} (${formatTimestamp(segment.start)} – ${formatTimestamp(segment.end)})`;
-
-            const textarea = document.createElement("textarea");
-            textarea.value = segment?.text || "";
-            textarea.dataset.index = String(index);
-
-            wrapper.appendChild(meta);
-            wrapper.appendChild(textarea);
-            transcriptionReviewBody.appendChild(wrapper);
-        });
+    if (!Array.isArray(pendingTranscriptionReview.payload.segments)) {
+        pendingTranscriptionReview.payload.segments = [];
     }
+    pendingTranscriptionReview.payload.segments.forEach(segment => {
+        if (!segment.segment_id) {
+            segment.segment_id = createSegmentId();
+        }
+        const start = Number(segment.start);
+        segment.start = Number.isFinite(start) ? start : 0;
+        const end = Number(segment.end);
+        segment.end = Number.isFinite(end) ? end : segment.start;
+        segment.lang = segment.lang || "";
+        segment.text = segment.text || "";
+        if (segment.lang) {
+            registerLanguage(segment.lang);
+        }
+    });
+
+    renderTranscriptionSegments();
 
     if (transcriptionReviewStatus) {
-        transcriptionReviewStatus.textContent = "Pipeline paused for transcription review.";
+        const durationLabel =
+            typeof durationValue === "number" && Number.isFinite(durationValue)
+                ? ` Audio length: ${durationValue.toFixed(3)}s (±${toleranceValue.toFixed(2)} s tolerance).`
+                : "";
+        transcriptionReviewStatus.textContent = `Pipeline paused for transcription review.${durationLabel}`;
     }
     if (transcriptionReviewApplyBtn) {
         transcriptionReviewApplyBtn.disabled = false;
@@ -1266,27 +1307,320 @@ function showTranscriptionReview(event) {
     if (transcriptionReviewSkipBtn) {
         transcriptionReviewSkipBtn.disabled = false;
     }
+    if (transcriptionReviewAddBtn) {
+        transcriptionReviewAddBtn.disabled = false;
+        transcriptionReviewAddBtn.hidden = false;
+    }
     transcriptionReviewCard.hidden = false;
     transcriptionReviewCard.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function renderTranscriptionSegments() {
+    if (!pendingTranscriptionReview || !transcriptionReviewBody) {
+        return;
+    }
+    const { payload, duration, languages, tolerance: toleranceRaw } = pendingTranscriptionReview;
+    const tolerance = typeof toleranceRaw === "number" && Number.isFinite(toleranceRaw) ? toleranceRaw : 0;
+    const segments = Array.isArray(payload.segments) ? payload.segments : [];
+
+    transcriptionReviewBody.innerHTML = "";
+    const intro = document.createElement("p");
+    intro.className = "review-instructions";
+    const durationLabel =
+        typeof duration === "number" && Number.isFinite(duration)
+            ? `Total audio duration: ${duration.toFixed(3)}s (±${tolerance.toFixed(2)} s tolerance).`
+            : "Adjust segment timings, languages, and text as needed.";
+    intro.textContent = `Adjust segment timings, languages, and text. ${durationLabel}`;
+    transcriptionReviewBody.appendChild(intro);
+
+    if (!segments.length) {
+        const emptyNote = document.createElement("p");
+        emptyNote.className = "review-instructions";
+        emptyNote.textContent = "No segments available. Use “Add segment” to create one.";
+        transcriptionReviewBody.appendChild(emptyNote);
+        return;
+    }
+
+    segments.forEach((segment, index) => {
+        const wrapper = document.createElement("div");
+        wrapper.className = "review-segment";
+        wrapper.dataset.segmentId = segment.segment_id || "";
+        wrapper.dataset.index = String(index);
+
+        const startValue = Number(segment.start) || 0;
+        const endValue = Number(segment.end) || 0;
+        const langDisplay = segment.lang ? ` · ${toLanguageLabel(segment.lang) || segment.lang}` : "";
+        const meta = document.createElement("div");
+        meta.className = "segment-meta";
+        const preciseLabel = `${startValue.toFixed(3)}s – ${endValue.toFixed(3)}s`;
+        meta.textContent = `Segment ${index + 1} (${formatTimestamp(startValue)} – ${formatTimestamp(endValue)} · ${preciseLabel})${langDisplay}`;
+        wrapper.appendChild(meta);
+
+        const startLabel = document.createElement("label");
+        startLabel.textContent = "Start (s)";
+        const startInput = document.createElement("input");
+        startInput.type = "number";
+        startInput.step = "0.001";
+        startInput.min = "0";
+        startInput.dataset.role = "segment-start";
+        if (typeof duration === "number" && Number.isFinite(duration) && duration > 0) {
+            startInput.max = String((duration + tolerance).toFixed(3));
+        }
+        startInput.value = Number.isFinite(startValue) ? String(startValue) : "0";
+        startLabel.appendChild(startInput);
+
+        const endLabel = document.createElement("label");
+        endLabel.textContent = "End (s)";
+        const endInput = document.createElement("input");
+        endInput.type = "number";
+        endInput.step = "0.001";
+        endInput.min = "0";
+        endInput.dataset.role = "segment-end";
+        if (typeof duration === "number" && Number.isFinite(duration) && duration > 0) {
+            endInput.max = String((duration + tolerance).toFixed(3));
+        }
+        endInput.value = Number.isFinite(endValue) ? String(endValue) : startInput.value;
+        endLabel.appendChild(endInput);
+
+        const langLabel = document.createElement("label");
+        langLabel.textContent = "Language";
+        let langControl;
+        if (Array.isArray(languages) && languages.length) {
+            langControl = document.createElement("select");
+            langControl.dataset.role = "segment-lang";
+            const autoOption = document.createElement("option");
+            autoOption.value = "";
+            autoOption.textContent = "Auto";
+            langControl.appendChild(autoOption);
+            languages.forEach(code => {
+                const option = document.createElement("option");
+                option.value = code;
+                option.textContent = toLanguageLabel(code) || code;
+                langControl.appendChild(option);
+            });
+            const normalized = (segment.lang || "").toLowerCase();
+            langControl.value = normalized && languages.includes(normalized) ? normalized : "";
+        } else {
+            langControl = document.createElement("input");
+            langControl.type = "text";
+            langControl.placeholder = "auto";
+            langControl.dataset.role = "segment-lang";
+            langControl.setAttribute("list", "language-list");
+            langControl.value = segment.lang || "";
+        }
+        langLabel.appendChild(langControl);
+
+        const textLabel = document.createElement("label");
+        textLabel.textContent = "Text";
+        const textarea = document.createElement("textarea");
+        textarea.dataset.role = "segment-text";
+        textarea.rows = Math.max(2, Math.min(6, Math.ceil(((segment.text || "").length || 1) / 60)));
+        textarea.value = segment.text || "";
+        textLabel.appendChild(textarea);
+
+        const actions = document.createElement("div");
+        actions.className = "segment-actions";
+
+        const addBeforeBtn = document.createElement("button");
+        addBeforeBtn.type = "button";
+        addBeforeBtn.className = "secondary";
+        addBeforeBtn.textContent = "Add before";
+        addBeforeBtn.addEventListener("click", () => addTranscriptionSegment(index - 1));
+
+        const addAfterBtn = document.createElement("button");
+        addAfterBtn.type = "button";
+        addAfterBtn.className = "secondary";
+        addAfterBtn.textContent = "Add after";
+        addAfterBtn.addEventListener("click", () => addTranscriptionSegment(index));
+
+        const deleteBtn = document.createElement("button");
+        deleteBtn.type = "button";
+        deleteBtn.className = "ghost";
+        deleteBtn.textContent = "Delete";
+        deleteBtn.addEventListener("click", () => removeTranscriptionSegment(index));
+
+        actions.appendChild(addBeforeBtn);
+        actions.appendChild(addAfterBtn);
+        actions.appendChild(deleteBtn);
+
+        wrapper.appendChild(startLabel);
+        wrapper.appendChild(endLabel);
+        wrapper.appendChild(langLabel);
+        wrapper.appendChild(textLabel);
+        wrapper.appendChild(actions);
+        transcriptionReviewBody.appendChild(wrapper);
+    });
+}
+
+function addTranscriptionSegment(afterIndex) {
+    if (!pendingTranscriptionReview) {
+        return;
+    }
+    const segments = Array.isArray(pendingTranscriptionReview.payload.segments)
+        ? pendingTranscriptionReview.payload.segments
+        : [];
+    const duration = typeof pendingTranscriptionReview.duration === "number" ? pendingTranscriptionReview.duration : null;
+    const tolerance =
+        typeof pendingTranscriptionReview.tolerance === "number" && Number.isFinite(pendingTranscriptionReview.tolerance)
+            ? pendingTranscriptionReview.tolerance
+            : 0;
+    const prev = afterIndex >= 0 ? segments[afterIndex] : null;
+    const next = segments[afterIndex + 1] || null;
+    const prevEnd = prev ? Number(prev.end ?? prev.start ?? 0) : 0;
+    const nextStartRaw = next ? Number(next.start ?? prevEnd) : duration;
+    const gap = Number.isFinite(nextStartRaw) ? Math.max(0, nextStartRaw - prevEnd) : 1;
+    let start = Number.isFinite(prevEnd) ? prevEnd : 0;
+    if (duration !== null) {
+        start = Math.min(Math.max(0, start), duration + tolerance);
+    }
+    let end = start + (gap > 0 ? Math.min(1, gap) : 1);
+    if (duration !== null) {
+        end = Math.min(end, duration + tolerance);
+    }
+    if (end <= start) {
+        end = duration !== null ? Math.min(duration + tolerance, start + 0.5) : start + 0.5;
+    }
+    const newSegment = {
+        segment_id: createSegmentId(),
+        start: Number.parseFloat(start.toFixed(3)),
+        end: Number.parseFloat(end.toFixed(3)),
+        text: "",
+        lang: "",
+        speaker_id: null,
+        words: null,
+    };
+    segments.splice(Math.max(afterIndex + 1, 0), 0, newSegment);
+    renderTranscriptionSegments();
+}
+
+function removeTranscriptionSegment(index) {
+    if (!pendingTranscriptionReview) {
+        return;
+    }
+    const segments = Array.isArray(pendingTranscriptionReview.payload.segments)
+        ? pendingTranscriptionReview.payload.segments
+        : [];
+    if (index < 0 || index >= segments.length) {
+        return;
+    }
+    segments.splice(index, 1);
+    renderTranscriptionSegments();
 }
 
 async function submitTranscriptionReview(applyChanges) {
     if (!pendingTranscriptionReview) {
         return false;
     }
-    const { runId, payload } = pendingTranscriptionReview;
+    const { runId, payload, duration } = pendingTranscriptionReview;
     if (!runId) {
         return false;
     }
 
     const submission = clonePayload(payload);
-    if (applyChanges && transcriptionReviewBody && Array.isArray(submission.segments)) {
-        transcriptionReviewBody.querySelectorAll("textarea[data-index]").forEach(textarea => {
-            const idx = Number(textarea.dataset.index);
-            if (Number.isInteger(idx) && submission.segments[idx]) {
-                submission.segments[idx].text = textarea.value.trim();
+    if (!Array.isArray(submission.segments)) {
+        submission.segments = [];
+    }
+
+    if (applyChanges && transcriptionReviewBody) {
+        const baseSegments = Array.isArray(payload.segments) ? payload.segments : [];
+        const durationLimit = typeof duration === "number" && Number.isFinite(duration) ? duration : null;
+        const tolerance =
+            typeof pendingTranscriptionReview.tolerance === "number" && Number.isFinite(pendingTranscriptionReview.tolerance)
+                ? pendingTranscriptionReview.tolerance
+                : 0;
+        const updatedSegments = [];
+        let hasError = false;
+        const errorMessages = new Set();
+
+        transcriptionReviewBody.querySelectorAll(".review-segment").forEach(segmentEl => {
+            const segmentId = segmentEl.dataset.segmentId || createSegmentId();
+            const startInput = segmentEl.querySelector('[data-role="segment-start"]');
+            const endInput = segmentEl.querySelector('[data-role="segment-end"]');
+            const langControl = segmentEl.querySelector('[data-role="segment-lang"]');
+            const textArea = segmentEl.querySelector('[data-role="segment-text"]');
+
+            const startValueRaw = startInput ? Number.parseFloat(startInput.value) : 0;
+            const endValueRaw = endInput ? Number.parseFloat(endInput.value) : startValueRaw;
+
+            const startValid =
+                Number.isFinite(startValueRaw) &&
+                startValueRaw >= -tolerance &&
+                (durationLimit === null || startValueRaw <= durationLimit + tolerance);
+            const endValid =
+                Number.isFinite(endValueRaw) &&
+                endValueRaw >= -tolerance &&
+                (durationLimit === null || endValueRaw <= durationLimit + tolerance) &&
+                Number.isFinite(startValueRaw) &&
+                endValueRaw >= startValueRaw;
+
+            let segmentHasError = false;
+            if (!startValid) {
+                hasError = true;
+                segmentHasError = true;
+                errorMessages.add(`Segment start times must stay within the audio duration (±${tolerance.toFixed(2)} s).`);
+            }
+            if (!endValid) {
+                hasError = true;
+                segmentHasError = true;
+                errorMessages.add(`Segment end times must stay within the audio duration (±${tolerance.toFixed(2)} s) and ≥ start.`);
+            }
+            markInputValidity(
+                startInput,
+                startValid,
+                `Start must be within audio duration (±${tolerance.toFixed(2)} s).`,
+            );
+            markInputValidity(
+                endInput,
+                endValid,
+                `End must be within audio duration (±${tolerance.toFixed(2)} s) and ≥ start.`,
+            );
+
+            const textValue = textArea ? textArea.value.trim() : "";
+            const langRaw = langControl ? langControl.value.toString().trim() : "";
+            const resolvedLang = resolveLanguageCode(langRaw) || langRaw;
+            const langValue = resolvedLang ? resolvedLang.toLowerCase() : "";
+
+            const reference = baseSegments.find(seg => seg.segment_id === segmentId) || {};
+
+            if (!segmentHasError) {
+                const clampedStart =
+                    durationLimit === null
+                        ? Math.max(0, startValueRaw)
+                        : Math.min(Math.max(0, startValueRaw), durationLimit + tolerance);
+                const clampedEnd =
+                    durationLimit === null
+                        ? Math.max(clampedStart, endValueRaw)
+                        : Math.min(Math.max(clampedStart, endValueRaw), durationLimit + tolerance);
+                updatedSegments.push({
+                    segment_id: segmentId,
+                    start: Number.parseFloat((clampedStart || 0).toFixed(3)),
+                    end: Number.parseFloat((clampedEnd || clampedStart || 0).toFixed(3)),
+                    text: textValue,
+                    lang: langValue,
+                    speaker_id: reference.speaker_id || null,
+                    words: null,
+                });
             }
         });
+
+        if (hasError) {
+            if (transcriptionReviewStatus) {
+                transcriptionReviewStatus.textContent = `Fix highlighted segment issues: ${Array.from(errorMessages).join(" ")}`;
+            }
+            if (transcriptionReviewApplyBtn) {
+                transcriptionReviewApplyBtn.disabled = false;
+            }
+            if (transcriptionReviewSkipBtn) {
+                transcriptionReviewSkipBtn.disabled = false;
+            }
+            if (transcriptionReviewAddBtn) {
+                transcriptionReviewAddBtn.disabled = false;
+            }
+            return false;
+        }
+
+        updatedSegments.sort((a, b) => a.start - b.start);
+        submission.segments = updatedSegments;
     }
 
     if (transcriptionReviewApplyBtn) {
@@ -1294,6 +1628,9 @@ async function submitTranscriptionReview(applyChanges) {
     }
     if (transcriptionReviewSkipBtn) {
         transcriptionReviewSkipBtn.disabled = true;
+    }
+    if (transcriptionReviewAddBtn) {
+        transcriptionReviewAddBtn.disabled = true;
     }
     if (transcriptionReviewStatus) {
         transcriptionReviewStatus.textContent = "Submitting review…";
@@ -1321,6 +1658,9 @@ async function submitTranscriptionReview(applyChanges) {
         }
         if (transcriptionReviewSkipBtn) {
             transcriptionReviewSkipBtn.disabled = false;
+        }
+        if (transcriptionReviewAddBtn) {
+            transcriptionReviewAddBtn.disabled = false;
         }
         appendLog(`❌ Failed to submit transcription review: ${err.message}`);
         return false;
@@ -2396,6 +2736,18 @@ if (transcriptionReviewApplyBtn) {
 if (transcriptionReviewSkipBtn) {
     transcriptionReviewSkipBtn.addEventListener("click", () => {
         submitTranscriptionReview(false);
+    });
+}
+
+if (transcriptionReviewAddBtn) {
+    transcriptionReviewAddBtn.addEventListener("click", () => {
+        if (!pendingTranscriptionReview) {
+            return;
+        }
+        const segments = Array.isArray(pendingTranscriptionReview.payload.segments)
+            ? pendingTranscriptionReview.payload.segments
+            : [];
+        addTranscriptionSegment(segments.length - 1);
     });
 }
 
