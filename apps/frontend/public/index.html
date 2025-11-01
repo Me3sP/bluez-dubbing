@@ -1838,6 +1838,22 @@ function showTTSReview(event) {
     }
     const runId = event?.run_id || "";
     const language = event?.language || "";
+    const ttsModel = event?.tts_model || "";
+    let supportedLangs = Array.isArray(event?.languages)
+        ? Array.from(
+            new Set(
+                event.languages
+                    .map(lang => (typeof lang === "string" ? lang.trim().toLowerCase() : ""))
+                    .filter(Boolean),
+            ),
+        )
+        : [];
+    supportedLangs.forEach(code => registerLanguage(code));
+    supportedLangs = supportedLangs.sort((a, b) => {
+        const labelA = toLanguageLabel(a) || a;
+        const labelB = toLanguageLabel(b) || b;
+        return labelA.localeCompare(labelB);
+    });
     const segments = Array.isArray(event?.segments) ? [...event.segments] : [];
     segments.sort((a, b) => {
         const startA = typeof a.start === "number" ? a.start : 0;
@@ -1848,6 +1864,8 @@ function showTTSReview(event) {
     pendingTTSReview = {
         runId,
         language,
+        ttsModel,
+        languages: supportedLangs,
         segmentRefs: new Map(),
     };
 
@@ -1900,13 +1918,37 @@ function showTTSReview(event) {
 
             const langLabelEl = document.createElement("label");
             langLabelEl.textContent = "Language";
-            const langInput = document.createElement("input");
-            langInput.type = "text";
-            langInput.dataset.segmentId = segmentId;
-            langInput.placeholder = "auto";
-            langInput.value = segment.lang || "";
-            langInput.setAttribute("list", "language-list");
-            langLabelEl.appendChild(langInput);
+            let langControl;
+            if (supportedLangs.length) {
+                langControl = document.createElement("select");
+                langControl.dataset.segmentId = segmentId;
+                langControl.dataset.role = "segment-lang";
+                const autoOption = document.createElement("option");
+                autoOption.value = "";
+                autoOption.textContent = "Auto";
+                langControl.appendChild(autoOption);
+                supportedLangs.forEach(code => {
+                    const opt = document.createElement("option");
+                    opt.value = code;
+                    opt.textContent = toLanguageLabel(code) || code;
+                    langControl.appendChild(opt);
+                });
+                const normalizedLang = (segment.lang || "").toLowerCase();
+                if (normalizedLang && supportedLangs.includes(normalizedLang)) {
+                    langControl.value = normalizedLang;
+                } else {
+                    langControl.value = "";
+                }
+            } else {
+                langControl = document.createElement("input");
+                langControl.type = "text";
+                langControl.dataset.segmentId = segmentId;
+                langControl.dataset.role = "segment-lang";
+                langControl.placeholder = "auto";
+                langControl.value = segment.lang || "";
+                langControl.setAttribute("list", "language-list");
+            }
+            langLabelEl.appendChild(langControl);
 
             const regenBtn = document.createElement("button");
             regenBtn.type = "button";
@@ -1935,7 +1977,7 @@ function showTTSReview(event) {
                 wrapper,
                 audioEl,
                 textArea: textarea,
-                langInput,
+                langControl,
                 regenerateBtn: regenBtn,
                 statusLabel: statusSpan,
             });
@@ -1944,9 +1986,10 @@ function showTTSReview(event) {
 
     if (ttsReviewStatus) {
         const label = language ? toLanguageLabel(language) || language : "";
+        const modelLabel = ttsModel ? ` · Model: ${ttsModel}` : "";
         ttsReviewStatus.textContent = label
-            ? `Pipeline paused for TTS review (${label}).`
-            : "Pipeline paused for TTS review.";
+            ? `Pipeline paused for TTS review (${label})${modelLabel}.`
+            : `Pipeline paused for TTS review${modelLabel}.`;
     }
     if (ttsReviewApplyBtn) {
         ttsReviewApplyBtn.disabled = false;
@@ -1969,8 +2012,25 @@ function updateTTSReviewSegment(segment) {
     if (typeof segment.text === "string" && refs.textArea) {
         refs.textArea.value = segment.text;
     }
-    if (refs.langInput) {
-        refs.langInput.value = segment.lang || "";
+    if (refs.langControl) {
+        const nextLang = (segment.lang || "").toLowerCase();
+        if (refs.langControl.tagName === "SELECT") {
+            let options = Array.from(refs.langControl.options).map(opt => opt.value);
+            if (nextLang && !options.includes(nextLang)) {
+                const opt = document.createElement("option");
+                opt.value = nextLang;
+                opt.textContent = toLanguageLabel(nextLang) || nextLang;
+                refs.langControl.appendChild(opt);
+                options = Array.from(refs.langControl.options).map(opt => opt.value);
+            }
+            if (nextLang && options.includes(nextLang)) {
+                refs.langControl.value = nextLang;
+            } else {
+                refs.langControl.value = "";
+            }
+        } else {
+            refs.langControl.value = segment.lang || "";
+        }
     }
     if (refs.audioEl && segment.audio && segment.audio.url) {
         const nextSrc = resolveBackendUrl(segment.audio.url);
@@ -1994,7 +2054,7 @@ async function regenerateTTSReviewSegment(segmentId) {
     }
 
     const textValue = refs.textArea ? refs.textArea.value.trim() : "";
-    const langRaw = refs.langInput ? refs.langInput.value.trim() : "";
+    const langRaw = refs.langControl ? refs.langControl.value.toString().trim() : "";
     const langValue = resolveLanguageCode(langRaw) || langRaw;
 
     if (refs.regenerateBtn) {
@@ -2053,9 +2113,9 @@ async function submitTTSReview(applyChanges) {
                 return;
             }
             const textArea = segmentEl.querySelector(`textarea[data-segment-id="${segmentId}"]`);
-            const langInput = segmentEl.querySelector(`input[data-segment-id="${segmentId}"]`);
+            const langControl = segmentEl.querySelector(`[data-role="segment-lang"]`);
             const textValue = textArea ? textArea.value.trim() : "";
-            const langInputRaw = langInput ? langInput.value.trim() : "";
+            const langInputRaw = langControl ? langControl.value.toString().trim() : "";
             const resolvedLang = resolveLanguageCode(langInputRaw) || langInputRaw;
             segments.push({
                 segment_id: segmentId,

@@ -420,6 +420,7 @@ class TTSReviewSession:
     segments: Dict[str, TTSReviewSegmentState]
     lock: asyncio.Lock
     future: asyncio.Future[bool]
+    languages: List[str]
 
 
 async def run_in_thread(func, *args, **kwargs):
@@ -819,6 +820,11 @@ async def run_tts_review_session(
 
     if not segments_state:
         return
+    
+    worker = TTS_WORKERS.get(tts_model)
+    available_languages = []
+    if worker and getattr(worker, "languages", None):
+        available_languages = sorted({(lang or "").lower() for lang in worker.languages if lang})
 
     loop = asyncio.get_running_loop()
     future: asyncio.Future[bool] = loop.create_future()
@@ -832,6 +838,7 @@ async def run_tts_review_session(
         segments=segments_state,
         lock=asyncio.Lock(),
         future=future,
+        languages=available_languages,
     )
 
     TTS_REVIEW_SESSIONS[key] = session
@@ -842,6 +849,8 @@ async def run_tts_review_session(
             "type": "tts_review",
             "run_id": run_id,
             "language": language,
+            "tts_model": tts_model,
+            "languages": available_languages,
             "segments": [serialize_tts_review_segment(state) for state in segments_state.values()],
         }
     )
