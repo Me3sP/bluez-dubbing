@@ -31,16 +31,17 @@ def read_model_languages(model_key: str) -> list[str]:
 
 # Map multiple models for this service
 WORKERS = {
-        "facebook_m2m100": Worker(
-            venv_python=BASE/"models/facebook_m2m100Model/.venv/bin/python",
-            runner=BASE/"models/facebook_m2m100Model/runner.py",
-            languages=read_model_languages("facebook_m2m100"),
-        ),
         "deep_translator": Worker(
             venv_python=BASE/"models/deepTranslationModel/.venv/bin/python",
             runner=BASE/"models/deepTranslationModel/runner.py",
             languages=read_model_languages("deep_translator"),
         ),
+        "facebook_m2m100": Worker(
+            venv_python=BASE/"models/facebook_m2m100Model/.venv/bin/python",
+            runner=BASE/"models/facebook_m2m100Model/runner.py",
+            languages=read_model_languages("facebook_m2m100"),
+        ),
+        
     }
 
 def get_worker(model_key: str | None, source_language: int, target_language: str) -> tuple[Path, Path]:
