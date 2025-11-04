@@ -1151,6 +1151,7 @@ function addTargetLanguage(rawValue) {
     if (!code) {
         if (targetLangInput) {
             targetLangInput.value = "";
+            targetLangInput.dispatchEvent(new Event("input", { bubbles: true }));
         }
         return;
     }
@@ -1162,6 +1163,7 @@ function addTargetLanguage(rawValue) {
     }
     if (targetLangInput) {
         targetLangInput.value = "";
+        targetLangInput.dispatchEvent(new Event("input", { bubbles: true }));
     }
 }
 
