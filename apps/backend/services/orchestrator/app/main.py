@@ -1705,7 +1705,10 @@ async def dub(
     subtitles_dir: Optional[Path] = None
 
     def make_temp_dir(label: str) -> Path:
-        path = Path(tempfile.mkdtemp(prefix=f"bluez_{label}_"))
+        if workspace.persist_intermediate:
+            return workspace.ensure_dir(label)
+        temp_root = workspace.ensure_dir("_temp")
+        path = Path(tempfile.mkdtemp(prefix=f"bluez_{label}_", dir=temp_root))
         temp_dirs.append(path)
         return path
 
@@ -2298,6 +2301,8 @@ async def dub(
         if not workspace.persist_intermediate:
             for path in temp_dirs:
                 shutil.rmtree(path, ignore_errors=True)
+            temp_root = workspace.workspace / "_temp"
+            shutil.rmtree(temp_root, ignore_errors=True)
         if cancelled:
             try:
                 shutil.rmtree(workspace.workspace, ignore_errors=True)
