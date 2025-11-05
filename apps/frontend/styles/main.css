@@ -15,8 +15,9 @@ body {
     margin: 0;
     min-height: 100vh;
     display: flex;
-    justify-content: center;
-    align-items: flex-start;
+    flex-direction: column;
+    justify-content: flex-start;
+    align-items: center;
     transition: background 0.3s ease, color 0.3s ease;
 }
 
@@ -30,24 +31,45 @@ body[data-theme="light"] {
     color: #1f2023;
 }
 
-body[data-theme="dark"] main {
+body[data-theme="dark"] section, body[data-theme="dark"] .preview-card {
     background: linear-gradient(145deg, rgba(35, 37, 41, 0.98), rgba(24, 25, 28, 0.92));
     border: 1px solid rgba(78, 80, 88, 0.6);
     box-shadow: 0 24px 48px rgba(0, 0, 0, 0.35);
 }
-
-body[data-theme="light"] main {
+    
+body[data-theme="light"] section, body[data-theme="light"] .preview-card {
     background: linear-gradient(145deg, rgba(255, 255, 255, 0.95), rgba(242, 244, 248, 0.9));
     border: 1px solid rgba(208, 214, 222, 0.8);
     box-shadow: 0 20px 45px rgba(45, 55, 72, 0.15);
 }
 
 main {
+    display: grid;
+    gap: 30px;
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    height: 200px;
+    flex: 1 1 auto;
+}
+
+section {
     width: min(980px, 96vw);
-    margin: 40px auto;
+    margin: 10px auto;
     border-radius: 22px;
-    overflow: hidden;
+    /* overflow-y: auto; */
     backdrop-filter: blur(18px);
+    padding: 30px 34px 36px;
+    display: grid;
+    gap: 26px;
+}
+
+@media (min-width: 1500px) {
+    main {
+        grid-template-columns: 1fr 2fr;
+    }
+    section {
+        overflow-y: auto;
+    }
 }
 
 header {
@@ -128,23 +150,14 @@ body[data-theme="light"] .logo-light {
     box-shadow: 0 10px 18px rgba(88, 101, 242, 0.35);
 }
 
-section {
-    padding: 30px 34px 36px;
-    display: grid;
-    gap: 26px;
-}
-
 .previews {
     display: grid;
-    gap: 18px;
     grid-template-columns: 1fr;
     justify-items: center;
-}
-
-@media (min-width: 900px) {
-    .previews {
-        grid-template-columns: 1fr 1fr;
-    }
+    align-items: start;
+    margin: 10px auto;
+    width: 100%;
+    gap: 24px;
 }
 
 .preview-card {
@@ -155,8 +168,9 @@ section {
     gap: 14px;
     border: 1px solid rgba(108, 116, 138, 0.3);
     background: rgba(32, 34, 37, 0.6);
-    width: min(100%, 520px);
+    width: min(90%, 520px);
     margin: 0 auto;
+    max-height: none;
 }
 
 .download-progress {
@@ -199,11 +213,15 @@ body[data-theme="light"] .preview-card {
     opacity: 0.7;
 }
 
+.preview-card.empty {
+    min-height: 100px;
+}
+
 .preview-card video {
     width: 100%;
     border-radius: 14px;
     background: rgba(15, 16, 20, 0.85);
-    min-height: 220px;
+    max-height: 700px;
 }
 
 .preview-header {

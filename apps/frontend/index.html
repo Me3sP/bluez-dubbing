@@ -19,7 +19,6 @@
         } catch (_) {}
         })();
     </script>
-<main>
     <header>
         <div class="brand">
             <img src="./assets/icon.png" alt="Bluez icon" class="icon icon-dark">
@@ -35,8 +34,10 @@
             <span class="theme-label">Dark</span>
         </button>
     </header>
-    <section>
-        <div class="previews">
+
+<main>
+    
+    <div class="previews">
             <div class="preview-card empty" id="source-preview-card">
                 <div class="preview-header">
                     <h2>Source Preview</h2>
@@ -44,8 +45,9 @@
                 </div>
                 <video id="source-video" controls playsinline></video>
             </div>
-        </div>
-
+    </div>
+    
+    <section>
         <form id="dub-form">
             <input type="hidden" name="reuse_media_token" id="reuse-media-token">
             <fieldset>
