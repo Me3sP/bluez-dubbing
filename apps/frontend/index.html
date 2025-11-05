@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Bluez Dubbing Studio</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="./styles/main.css">
+</head>
+<body>
+    <script>
+        (function () {
+        try {
+            const KEY = "bluez-ui-theme";
+            const stored = localStorage.getItem(KEY);
+            const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+            const theme = stored || (prefersDark ? "dark" : "light");
+            document.body.dataset.theme = theme;
+            document.body.style.colorScheme = theme;
+        } catch (_) {}
+        })();
+    </script>
+<main>
+    <header>
+        <div class="brand">
+            <img src="./assets/icon.png" alt="Bluez icon" class="icon icon-dark">
+            <img src="./assets/icon2.png" alt="Bluez icon light" class="icon icon-light">
+            <div>
+                <img src="./assets/logo.png" alt="Bluez logo" class="logo logo-dark">
+                <img src="./assets/logo2.png" alt="Bluez logo light" class="logo logo-light">
+                <p class="tagline">Choose your vibe, dub in any language, monitor every step.</p>
+            </div>
+        </div>
+        <button type="button" class="theme-toggle" id="theme-toggle">
+            <span aria-hidden="true">🌙</span>
+            <span class="theme-label">Dark</span>
+        </button>
+    </header>
+    <section>
+        <div class="previews">
+            <div class="preview-card empty" id="source-preview-card">
+                <div class="preview-header">
+                    <h2>Source Preview</h2>
+                    <span class="preview-status" id="source-preview-text">Waiting for media…</span>
+                </div>
+                <video id="source-video" controls playsinline></video>
+            </div>
+        </div>
+
+        <form id="dub-form">
+            <input type="hidden" name="reuse_media_token" id="reuse-media-token">
+            <fieldset>
+                <legend>Media</legend>
+                <label>
+                    Source Video / Audio
+                    <input type="file" name="file" accept="video/*,audio/*">
+                </label>
+                <label>
+                    Or Video Link
+                    <input type="url" name="video_url" placeholder="https://www.youtube.com/watch?v=...">
+                    <div class="download-progress" id="download-progress" hidden>
+                        <div class="download-bar" id="download-bar"></div>
+                        <span class="download-label" id="download-label">Downloading…</span>
+                    </div>
+                </label>
+                <p class="hint">Provide either a local file or a public video URL (YouTube, Instagram, TikTok, ...).</p>
+                <div class="flex">
+                    <label>
+                        Task
+                        <select name="target_work">
+                            <option value="dub">Dubbing</option>
+                            <option value="sub">Subtitling</option>
+                        </select>
+                    </label>
+                    <label>
+                        Source Language
+                        <input type="text" name="source_lang" list="language-list" placeholder="auto-detect (leave blank)">
+                    </label>
+                    <label>
+                        Target Languages
+                        <div class="tag-input" id="target-lang-field">
+                            <div class="tag-input__tags" id="target-lang-tags"></div>
+                            <input type="text" id="target-lang-input" list="language-list" placeholder="Type code and press Enter">
+                        </div>
+                    </label>
+                </div>
+            </fieldset>
+
+            <fieldset>
+                <legend>Models</legend>
+                <div class="flex">
+                    <label>
+                        ASR Model
+                        <select name="asr_model" id="asr-model">
+                            <option value="auto">Auto</option>
+                        </select>
+                    </label>
+                    <label>
+                        Translation Model
+                        <select name="tr_model" id="tr-model">
+                            <option value="auto">Auto</option>
+                        </select>
+                    </label>
+                    <label>
+                        TTS Model
+                        <select name="tts_model" id="tts-model">
+                            <option value="auto">Auto</option>
+                        </select>
+                    </label>
+                </div>
+                <label>
+                    Audio Separation Model
+                    <select name="sep_model" id="sep-model">
+                        <option value="auto">Auto</option>
+                    </select>
+                </label>
+            </fieldset>
+
+            <fieldset>
+                <legend>Strategies</legend>
+                <div class="flex">
+                    <label>
+                        Translation Strategy
+                        <select name="translation_strategy" id="translation-strategy"></select>
+                    </label>
+                    <label>
+                        Dubbing Strategy
+                        <select name="dubbing_strategy" id="dubbing-strategy"></select>
+                    </label>
+                    <label>
+                        Subtitle Style
+                        <select name="subtitle_style" id="subtitle-style">
+                            <option value="">No subtitles</option>
+                        </select>
+                    </label>
+                </div>
+            </fieldset>
+
+            <fieldset>
+                <legend>Diarization</legend>
+                <div class="flex">
+                    <label>
+                        Min speakers
+                        <input type="number" name="min_speakers" min="1" placeholder="leave blank for auto">
+                    </label>
+                    <label>
+                        Max speakers
+                        <input type="number" name="max_speakers" min="1" placeholder="leave blank for auto">
+                    </label>
+                </div>
+                <p class="hint">Provide speaker count hints when known to improve diarization accuracy.</p>
+            </fieldset>
+
+            <fieldset>
+                <legend>Toggles</legend>
+                <div class="flex">
+                    <label class="checkbox-row">
+                        <input type="checkbox" id="persist-intermediate" name="persist_intermediate">
+                        Keep intermediate artefacts
+                    </label>
+                    <label class="checkbox-row">
+                        <input type="checkbox" id="audio-sep" name="audio_sep" checked>
+                        Perform source separation
+                    </label>
+                    <label class="checkbox-row">
+                        <input type="checkbox" id="vad-trim" name="perform_vad_trimming" checked>
+                        Trim TTS with VAD
+                    </label>
+                    <label class="checkbox-row">
+                        <input type="checkbox" id="sophisticated-timing" name="sophisticated_dub_timing" checked>
+                        Sophisticated dub timing
+                    </label>
+                </div>
+            </fieldset>
+
+            <div class="actions">
+                <div class="button-group">
+                    <button type="submit" id="run-btn" class="primary">Run dubbing pipeline</button>
+                    <button type="button" id="mode-toggle-btn" class="secondary mode-toggle" aria-pressed="false">Involve mode: Off</button>
+                    <button type="button" id="interrupt-btn" class="secondary" disabled hidden>Interrupt run</button>
+                </div>
+                <span class="badge" id="status-badge">Idle</span>
+            </div>
+        </form>
+
+        <div>
+            <h2>Live Log</h2>
+            <div id="log">Waiting…</div>
+        </div>
+
+        <div class="review-card" id="transcription-review" hidden>
+            <div class="review-header">
+                <h2>Transcription Review</h2>
+                <span class="review-status" id="transcription-review-status">Pipeline paused for transcription review.</span>
+            </div>
+            <div class="review-body" id="transcription-review-body">
+                <p class="review-instructions">Review and adjust each segment before continuing.</p>
+            </div>
+            <div class="review-actions">
+                <button type="button" id="transcription-review-add" class="secondary">Add segment</button>
+                <button type="button" id="transcription-review-apply" class="primary">Apply corrections &amp; continue</button>
+                <button type="button" id="transcription-review-skip" class="secondary">Continue without changes</button>
+            </div>
+        </div>
+
+        <div class="review-card" id="alignment-review" hidden>
+            <div class="review-header">
+                <h2>Alignment &amp; Speaker Review</h2>
+                <span class="review-status" id="alignment-review-status">Pipeline paused for alignment review.</span>
+            </div>
+            <div class="review-body" id="alignment-review-body">
+                <p class="review-instructions">Adjust segment timings, text, and speakers. You can add, delete, or merge segments as needed.</p>
+            </div>
+            <div class="review-actions">
+                <button type="button" id="alignment-review-add" class="secondary">Add segment</button>
+                <button type="button" id="alignment-review-apply" class="primary">Apply alignment changes</button>
+                <button type="button" id="alignment-review-skip" class="secondary">Continue without changes</button>
+            </div>
+        </div>
+
+        <div class="review-card" id="tts-review" hidden>
+            <div class="review-header">
+                <h2>TTS Segment Review</h2>
+                <span class="review-status" id="tts-review-status">Pipeline paused for TTS review.</span>
+            </div>
+            <div class="review-body" id="tts-review-body">
+                <p class="review-instructions">Listen to each synthesized segment, adjust text or language, and regenerate as needed.</p>
+            </div>
+            <div class="review-actions">
+                <button type="button" id="tts-review-apply" class="primary">Apply changes &amp; continue</button>
+                <button type="button" id="tts-review-skip" class="secondary">Continue without changes</button>
+            </div>
+        </div>
+
+        <div>
+            <h2>Results</h2>
+            <div id="results">No runs yet.</div>
+            <div class="preview-card empty" id="result-preview-card">
+                <div class="preview-header">
+                    <h2>Result Preview</h2>
+                    <span class="preview-status" id="result-preview-text">No output yet.</span>
+                </div>
+                <div class="preview-controls">
+                    <label>
+                        Language
+                        <select id="result-language-select" disabled>
+                            <option value="">No output</option>
+                        </select>
+                    </label>
+                </div>
+                <video id="result-video" controls playsinline></video>
+            </div>
+        </div>
+
+        <datalist id="language-list"></datalist>
+        <datalist id="speaker-list"></datalist>
+    </section>
+</main>
+<script src="scripts/app.js"></script>
+</body>
+</html>

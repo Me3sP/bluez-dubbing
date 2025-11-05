@@ -30,7 +30,7 @@ start-api:
 start-ui:
 	@$(MAKE) stack-up
 	@echo "Starting Bluez dubbing UI…"
-	@cd apps/frontend/public && uv run python -m http.server $(UI_PORT) &
+	@cd apps/frontend && uv run python -m http.server $(UI_PORT) &
 	@echo "UI running at http://localhost:$(UI_PORT)"
 
 stop dev-down:
