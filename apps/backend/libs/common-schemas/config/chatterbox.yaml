@@ -34,3 +34,4 @@ params:
     repetition_penalty: 2.0
     min_p: 0.05
     top_p: 1.0
+  log_level: INFO

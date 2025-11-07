@@ -1,15 +1,23 @@
 # main config parameters
-batch_size: 16 # reduce if low on GPU mem
-compute_type: float16
-model_dir_asr: "./model_cache/asr/"
-orig_duck: 0.2 # volume reduction for original audio during dubbing when using the translation over strategy( value assigned in main.py line 1242)
+log_level: INFO
+transcript_tolerance: 0.25
 
-# subtitle parameters
-max_chars_per_line: 42
-max_lines: 2
-min_duration: 0.7
-max_duration: 7.0
-mobile_mode: True
-# if mobile_mode:
-max_chars_per_line : 30
-max_lines : 1
+concatenation:
+  alpha: 0.25
+  min_dur: 0.4
+
+overlay_on_background:
+  ducking_db: 0.0
+
+finalize_media:
+  ducking_db: 0.02
+
+default_models:
+  asr: "whisperx"
+  tr: "facebook_m2m100"
+  tts: "chatterbox"
+  sep: "melband_roformer_big_beta5e.ckpt"
+
+prompt_attachment:
+  min_duration: 1.0
+  max_duration: 40.0

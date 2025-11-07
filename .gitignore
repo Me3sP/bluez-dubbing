@@ -9,9 +9,12 @@ wheels/
 # Virtual environments
 .venv
 
-# own cache folder and generated files
+# own caches folders and generated files
 out/
-outs/
+outs/**/*
+!outs/.gitkeep
+uploads/**/*
+!uploads/.gitkeep
 logs/
 models_cache/
 model_cache/

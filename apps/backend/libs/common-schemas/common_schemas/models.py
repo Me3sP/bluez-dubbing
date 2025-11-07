@@ -1,5 +1,8 @@
 from pydantic import BaseModel, Field, computed_field
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any
+from pathlib import Path
+from asyncio import Lock, Future
+from dataclasses import dataclass
 
 # ASR
 class ASRRequest(BaseModel):
@@ -60,7 +63,8 @@ class SegmentAudioIn(BaseModel):
 class SegmentAudioOut(BaseModel):
     start: float | None = None
     end: float | None = None
-    audio_url: str | List[str]
+    text: str | None = None
+    audio_url: str 
     speaker_id: str | None = None
     lang: str | None = None
     sample_rate: int | None = None
@@ -100,3 +104,49 @@ class SubtitleSegment(BaseModel):
     def cps(self) -> float:
         """Characters per second."""
         return self.char_count / self.duration if self.duration > 0 else 0
+
+@dataclass
+class TTSReviewSession():
+    run_id: str
+    language: str
+    tts_model: str
+    workspace: Path
+    translation: Dict[str, Segment]
+    tts_response: TTSResponse
+    segments: Dict[str, SegmentAudioOut]
+    lock: Lock
+    future: Future[bool]
+    languages: List[str]
+
+@dataclass
+class TranscriptionReviewSession():
+    run_id: str
+    audio_duration: float # might be useless check where it's used
+    audio_path: Optional[str]
+    languages: List[str]
+    tolerance: float
+
+class TranscriptionReviewRequest(BaseModel):
+    run_id: str
+    transcription: ASRResponse
+
+class AlignmentReviewRequest(BaseModel):
+    run_id: str
+    alignment: ASRResponse
+
+class TTSReviewSegmentUpdate(BaseModel):
+    segment_id: str
+    text: str
+    lang: Optional[str] = None
+
+class TTSReviewRequest(BaseModel):
+    run_id: str
+    language: Optional[str] = None
+    segments: List[TTSReviewSegmentUpdate] = Field(default_factory=list)
+
+class TTSRegenerateRequest(BaseModel):
+    run_id: str
+    language: Optional[str] = None
+    segment_id: str
+    text: str
+    lang: Optional[str] = None

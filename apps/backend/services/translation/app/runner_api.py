@@ -103,7 +103,10 @@ def _format_cmd(venv_python: Path, runner: Path) -> Tuple[str, ...]:
 def call_worker(model_key: str, payload: BaseModel, out_model: type[T]) -> T:
     vpy, runner, selected_key = get_worker(model_key, payload.source_lang, payload.target_lang)
     cfg = _load_model_config(selected_key)
-    payload.extra = dict(cfg.get("params", {}))
+    cfg_params = dict(cfg.get("params", {}))
+    existing_extra = getattr(payload, "extra", {}) or {}
+    merged_extra = {**cfg_params, **existing_extra}
+    payload.extra = merged_extra
 
     if not USE_PERSISTENT:
         cmd = list(_format_cmd(vpy, runner))

@@ -20,7 +20,7 @@ _MODEL_LOCK = threading.Lock()
 _LOGGER = None
 
 
-def _get_logger() -> logging.Logger:
+def _get_logger(log_level) -> logging.Logger:
     global _LOGGER
     if _LOGGER is None:
         _LOGGER = logging.getLogger("tts.chatterbox")
@@ -28,7 +28,7 @@ def _get_logger() -> logging.Logger:
             handler = logging.StreamHandler(sys.stderr)
             handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
             _LOGGER.addHandler(handler)
-        _LOGGER.setLevel(logging.INFO)
+        _LOGGER.setLevel(log_level)
         _LOGGER.propagate = False
     return _LOGGER
 
@@ -37,8 +37,8 @@ def _device() -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def _load_model(model_name: str, device: str):
-    logger = _get_logger()
+def _load_model(model_name: str, device: str, log_level: int):
+    logger = _get_logger(log_level)
     key = (model_name, device)
     with _MODEL_LOCK:
         cached = _MODEL_CACHE.get(key)
@@ -61,14 +61,16 @@ def _load_model(model_name: str, device: str):
 
 
 def _synthesize(req: TTSRequest) -> TTSResponse:
-    logger = _get_logger()
+    log_level = req.extra.get("log_level", "INFO").upper()
+    log_level = getattr(logging, log_level, logging.INFO)
+    logger = _get_logger(log_level)
     run_start = time.perf_counter()
     workspace_path = Path(req.workspace)
     workspace_path.mkdir(parents=True, exist_ok=True)
 
     model_name = (req.extra or {}).get("model_name", "chatterbox_multilingual")
     device = _device()
-    model, sample_rate = _load_model(model_name, device)
+    model, sample_rate = _load_model(model_name, device, log_level)
 
     out = TTSResponse()
     generation_kwargs = (req.extra or {}).get("generate", {})
@@ -114,6 +116,7 @@ def _synthesize(req: TTSRequest) -> TTSResponse:
             SegmentAudioOut(
                 start=segment.start,
                 end=segment.end,
+                text=segment.text,
                 audio_url=str(output_file),
                 speaker_id=segment.speaker_id,
                 lang=segment.lang,

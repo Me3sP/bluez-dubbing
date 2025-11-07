@@ -46,13 +46,13 @@ def get_worker(model_key: str | None, runner_index: int, language: str) -> tuple
     selected_key = None
     if model_key in WORKERS:
         w = WORKERS[model_key]
-        if not w.languages or language in w.languages:
+        if  w.languages and language in w.languages:
             selected_key = model_key
 
     # Otherwise, pick the first model that supports the language
     if selected_key is None:
         for k, w in WORKERS.items():
-            if not w.languages or language in w.languages:
+            if w.languages and language in w.languages:
                 selected_key = k
                 break
 

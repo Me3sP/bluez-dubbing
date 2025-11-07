@@ -23,13 +23,16 @@ def _clear_cuda_cache() -> None:
 if __name__ == "__main__":
     try:
         req = ASRResponse(**json.loads(sys.stdin.read()))
+        extra = dict(req.extra or {})
+        log_level = extra.get("log_level", "INFO").upper()
+        log_level = getattr(logging, log_level, logging.INFO)
 
         logger = logging.getLogger("whisperx.runner.align")
         if not logger.handlers:
             handler = logging.StreamHandler(sys.stderr)
             handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
             logger.addHandler(handler)
-        logger.setLevel(logging.INFO)
+        logger.setLevel(log_level)
         logger.propagate = False
 
         with contextlib.redirect_stdout(sys.stderr):
@@ -39,7 +42,6 @@ if __name__ == "__main__":
                 raise ValueError("language is required for alignment.")
 
             req_dict = req.model_dump()
-            extra = dict(req_dict.get("extra") or {})
             load_dotenv()
             diarize_enabled = bool(extra.get("enable_diarization", True))
             diarization_model_name = extra.get("diarization_model")

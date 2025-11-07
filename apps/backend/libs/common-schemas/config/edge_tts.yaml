@@ -83,12 +83,14 @@ languages:
   - zh
 
 
-# Communicate class hyperparameters
+
 params:
   general:
     out_format: "wav"
     default_voice: "en-US-AriaNeural"
     gender: "Male" # try to see if we can automatically detect the gender of the speaker in the main code
+  
+  # Communicate class hyperparameters
   communicate:
     rate: "+0%"
     volume: "+0%"
@@ -98,3 +100,5 @@ params:
     proxy: null
     connect_timeout: 10
     receive_timeout: 60
+    
+  log_level: INFO

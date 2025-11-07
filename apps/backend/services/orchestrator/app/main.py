@@ -14,17 +14,19 @@ import time
 import urllib.parse
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
-
-from pydantic import BaseModel, Field
-
 import httpx
+import yaml
 
 BASE = Path(__file__).resolve().parents[3]
 if str(BASE) not in sys.path:
     sys.path.insert(0, str(BASE))
+
+cfg_path = BASE / "libs" / "common-schemas" / "config" / "control_center.yaml"
+with open(cfg_path, "r") as f:
+    general_cfg = yaml.safe_load(f)
 
 from fastapi import File, FastAPI, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -40,6 +42,13 @@ from common_schemas.models import (
     TTSRequest,
     TTSResponse,
     TranslateRequest,
+    TranscriptionReviewSession,
+    SegmentAudioOut,
+    TTSReviewSession,
+    TranscriptionReviewRequest,
+    AlignmentReviewRequest,
+    TTSReviewRequest,
+    TTSRegenerateRequest,
 )
 from common_schemas.utils import (
     alignerWrapper,
@@ -67,16 +76,12 @@ from services.tts.app.registry import WORKERS as TTS_WORKERS
 
 logger = logging.getLogger("bluez.orchestrator")
 if not logger.handlers:
-    logging.basicConfig(level=logging.INFO)
+    # Read from control center config (default to INFO if not set)
+    log_level = general_cfg.get("log_level", "INFO").upper()
+    # Configure logging
+    logging.basicConfig(level=getattr(logging, log_level, logging.INFO))
 
-def _normalize_prefix(raw: str | None, default: str) -> str:
-    value = (raw or "").strip() or default
-    if not value.startswith("/"):
-        value = f"/{value}"
-    return value.rstrip("/") or default
-
-
-API_PREFIX = _normalize_prefix(os.getenv("ORCHESTRATOR_API_PREFIX"), "/api")
+API_PREFIX = "/api"
 JOBS_PREFIX = f"{API_PREFIX}/jobs"
 FILE_ROUTE = f"{JOBS_PREFIX}/file"
 RELEASE_ROUTE = f"{JOBS_PREFIX}/release_media"
@@ -100,9 +105,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-ASR_URL = os.getenv("ASR_URL", "http://localhost:8001/v1/transcribe")
-TR_URL = os.getenv("TR_URL", "http://localhost:8002/v1/translate")
-TTS_URL = os.getenv("TTS_URL", "http://localhost:8003/v1/synthesize")
+ASR_URL = "http://localhost:8001/v1/transcribe"
+TR_URL = "http://localhost:8002/v1/translate"
+TTS_URL = "http://localhost:8003/v1/synthesize"
 
 OUTS = BASE / "outs"
 SEPARATION_CACHE = BASE / "cache" / "audio_separation"
@@ -117,14 +122,17 @@ PROGRESS_REPORTER: contextvars.ContextVar[Optional[Callable[[Dict[str, Any]], No
 
 ACTIVE_JOBS: Dict[str, asyncio.Task] = {}
 TRANSCRIPTION_REVIEW_WAITERS: Dict[str, asyncio.Future[ASRResponse]] = {}
-TRANSCRIPTION_REVIEW_SESSIONS: Dict[str, "TranscriptionReviewSession"] = {}
+TRANSCRIPTION_REVIEW_SESSIONS: Dict[str, TranscriptionReviewSession] = {}
 ALIGNMENT_REVIEW_WAITERS: Dict[str, asyncio.Future[ASRResponse]] = {}
 TTS_REVIEW_WAITERS: Dict[tuple[str, str], asyncio.Future[bool]] = {}
-TTS_REVIEW_SESSIONS: Dict[tuple[str, str], "TTSReviewSession"] = {}
-TRANSCRIPTION_SEGMENT_TOLERANCE = 0.25
+TTS_REVIEW_SESSIONS: Dict[tuple[str, str], TTSReviewSession] = {}
+TRANSCRIPTION_SEGMENT_TOLERANCE = general_cfg.get("transcript_tolerance", 0.25)
 
-app.mount("/outs", StaticFiles(directory=str(OUTS), check_dir=False), name="outs")
+app.mount("/outs", StaticFiles(directory=str(OUTS)), name="outs")
 
+#-------------------------------------------------------------------------------------------------------------#
+#----------------------- Helper functions used across the orchestrator service -------------------------------#
+#-------------------------------------------------------------------------------------------------------------#
 
 def resolve_cached_media_token(token: str) -> Path:
     if not token:
@@ -138,7 +146,6 @@ def resolve_cached_media_token(token: str) -> Path:
     except ValueError as exc:
         raise HTTPException(400, "Invalid cached media token.") from exc
     return candidate
-
 
 def cleanup_cached_media_path(target: Path) -> None:
     uploads_dir = UPLOADS_DIR.resolve()
@@ -158,42 +165,6 @@ def cleanup_cached_media_path(target: Path) -> None:
         else:
             break
 
-
-def emit_progress(event: Dict[str, Any]) -> None:
-    reporter = PROGRESS_REPORTER.get()
-    if reporter is None:
-        return
-    try:
-        reporter(event)
-    except Exception:  # noqa: BLE001
-        logger.debug("Progress reporter failed for %s", event, exc_info=True)
-
-
-async def wait_for_transcription_review(run_id: str) -> ASRResponse:
-    loop = asyncio.get_running_loop()
-    future: asyncio.Future[ASRResponse] = loop.create_future()
-    TRANSCRIPTION_REVIEW_WAITERS[run_id] = future
-    try:
-        return await future
-    finally:
-        stored = TRANSCRIPTION_REVIEW_WAITERS.pop(run_id, None)
-        if stored is future and not future.done():
-            future.cancel()
-        TRANSCRIPTION_REVIEW_SESSIONS.pop(run_id, None)
-
-
-async def wait_for_alignment_review(run_id: str) -> ASRResponse:
-    loop = asyncio.get_running_loop()
-    future: asyncio.Future[ASRResponse] = loop.create_future()
-    ALIGNMENT_REVIEW_WAITERS[run_id] = future
-    try:
-        return await future
-    finally:
-        stored = ALIGNMENT_REVIEW_WAITERS.pop(run_id, None)
-        if stored is future and not future.done():
-            future.cancel()
-
-
 def build_file_payload(path_str: str | Path | None, *, cache_bust: bool = False) -> Optional[Dict[str, str]]:
     if not path_str:
         return None
@@ -211,15 +182,7 @@ def build_file_payload(path_str: str | Path | None, *, cache_bust: bool = False)
     return {"path": str(resolved), "url": url}
 
 
-def normalize_audio_url(value: str | List[str] | None) -> Optional[str]:
-    if value is None:
-        return None
-    if isinstance(value, list):
-        return value[0] if value else None
-    return value
-
-
-def serialize_tts_review_segment(state: TTSReviewSegmentState) -> Dict[str, Any]:
+def serialize_tts_review_segment(state: SegmentAudioOut) -> Dict[str, Any]:
     audio_payload = build_file_payload(state.audio_url, cache_bust=True)
     return {
         "segment_id": state.segment_id,
@@ -264,30 +227,6 @@ def unwrap_param(value: Any) -> Any:
         return value.default
     return value
 
-
-@app.on_event("startup")
-async def startup_event() -> None:
-    timeout = httpx.Timeout(connect=10.0, read=1200.0, write=10.0, pool=None)
-    app.state.http_client = httpx.AsyncClient(timeout=timeout)
-    OUTS.mkdir(parents=True, exist_ok=True)
-    SEPARATION_CACHE.mkdir(parents=True, exist_ok=True)
-    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-
-
-@app.on_event("shutdown")
-async def shutdown_event() -> None:
-    client = getattr(app.state, "http_client", None)
-    if client:
-        await client.aclose()
-
-
-def get_http_client() -> httpx.AsyncClient:
-    client = getattr(app.state, "http_client", None)
-    if client is None:
-        raise RuntimeError("HTTP client not initialized; startup event did not run.")
-    return client
-
-
 def list_worker_models(workers: Dict[str, Any]) -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     for key, worker in workers.items():
@@ -331,7 +270,7 @@ def resolve_model_choice(
     if language:
         for key, worker in workers.items():
             supported = getattr(worker, "languages", None)
-            if not supported or language in supported:
+            if supported and language in supported:
                 return key
 
     if fallback and fallback in workers:
@@ -340,6 +279,120 @@ def resolve_model_choice(
     return next(iter(workers))
 
 
+def resolve_media_path(video_url: str) -> str:
+
+    video_path = Path(video_url)
+    if not video_path.is_absolute():
+        video_path = BASE / video_url # relative to the backend root
+    if not video_path.exists():
+        raise HTTPException(404, f"Media file not found: {video_url}")
+    return str(video_path)
+
+
+def get_http_client() -> httpx.AsyncClient:
+    client = getattr(app.state, "http_client", None)
+    if client is None:
+        raise RuntimeError("HTTP client not initialized; startup event did not run.")
+    return client
+
+
+def separation_cache_key(raw_audio_path: Path, sep_model: str) -> str:
+    stat = raw_audio_path.stat()
+    key = f"{raw_audio_path.stat().st_size}-{stat.st_mtime_ns}-{sep_model}"
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()
+
+
+def parse_bool(value: Optional[str]) -> bool:
+    if value is None:
+        return False
+    return value.lower() in {"1", "true", "on", "yes"}
+
+
+def safe_filename(name: str) -> str:
+    stem = Path(name or "upload").name
+    return stem.replace(" ", "_") or "upload"
+
+
+def emit_progress(event: Dict[str, Any]) -> None:
+    reporter = PROGRESS_REPORTER.get()
+    if reporter is None:
+        return
+    try:
+        reporter(event)
+    except Exception:  # noqa: BLE001
+        logger.debug("Progress reporter failed for %s", event, exc_info=True)
+
+#-------------------------------------------------------------------------------------------------------------#
+#----------------------- Orchestrator's Helper class and async functions -------------------------------------#
+#-------------------------------------------------------------------------------------------------------------#
+
+async def wait_for_transcription_review(run_id: str) -> ASRResponse:
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[ASRResponse] = loop.create_future()
+    TRANSCRIPTION_REVIEW_WAITERS[run_id] = future
+    try:
+        return await future
+    finally:
+        stored = TRANSCRIPTION_REVIEW_WAITERS.pop(run_id, None)
+        if stored is future and not future.done():
+            future.cancel()
+        TRANSCRIPTION_REVIEW_SESSIONS.pop(run_id, None)
+
+
+async def wait_for_alignment_review(run_id: str) -> ASRResponse:
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[ASRResponse] = loop.create_future()
+    ALIGNMENT_REVIEW_WAITERS[run_id] = future
+    try:
+        return await future
+    finally:
+        stored = ALIGNMENT_REVIEW_WAITERS.pop(run_id, None)
+        if stored is future and not future.done():
+            future.cancel()
+
+@dataclass
+class WorkspaceManager:
+    workspace: Path
+    workspace_id: str
+    persist_intermediate: bool
+    temp_dirs: List[Optional[Path]] = field(default_factory=list)
+
+    @classmethod
+    def create(cls, base: Path, persist_intermediate: bool) -> "WorkspaceManager":
+        workspace_id = str(uuid.uuid4())
+        workspace = base / workspace_id
+        workspace.mkdir(parents=True, exist_ok=True)
+        return cls(workspace=workspace, workspace_id=workspace_id, persist_intermediate=persist_intermediate)
+
+    def ensure_dir(self, relative: str | Path) -> Path:
+        path = self.workspace / Path(relative)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def file_path(self, relative: str | Path) -> Path:
+        path = self.workspace / Path(relative)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def make_temp_dir(self, label: str) -> Path:
+        if self.persist_intermediate:
+            return self.ensure_dir(label)
+        temp_root = self.ensure_dir("_temp")
+        path = Path(tempfile.mkdtemp(prefix=f"bluez_{label}_", dir=temp_root))
+        self.temp_dirs.append(path)
+        return path
+
+    def maybe_dump_json(self, relative: str | Path, payload: Any, *, force: bool = False) -> str:
+        if self.persist_intermediate or force:
+            path = self.file_path(relative)
+            path.write_text(json.dumps(payload, indent=2))
+            return str(path)
+        return ""
+    
+    def temp_file(self, suffix=""):
+        """Return a temporary file path for ephemeral use."""
+        return tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    
 class StepTimer:
     def __init__(self) -> None:
         self.timings: Dict[str, float] = {}
@@ -366,75 +419,6 @@ class StepTimer:
                     logger.debug("Progress reporter failed for end of %s", label, exc_info=True)
 
 
-@dataclass
-class WorkspaceManager:
-    workspace: Path
-    workspace_id: str
-    persist_intermediate: bool
-
-    @classmethod
-    def create(cls, base: Path, persist_intermediate: bool) -> "WorkspaceManager":
-        workspace_id = str(uuid.uuid4())
-        workspace = base / workspace_id
-        workspace.mkdir(parents=True, exist_ok=True)
-        return cls(workspace=workspace, workspace_id=workspace_id, persist_intermediate=persist_intermediate)
-
-    def ensure_dir(self, relative: str | Path) -> Path:
-        path = self.workspace / Path(relative)
-        path.mkdir(parents=True, exist_ok=True)
-        return path
-
-    def file_path(self, relative: str | Path) -> Path:
-        path = self.workspace / Path(relative)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return path
-
-    def maybe_dump_json(self, relative: str | Path, payload: Any, *, force: bool = False) -> str:
-        if self.persist_intermediate or force:
-            path = self.file_path(relative)
-            path.write_text(json.dumps(payload, indent=2))
-            return str(path)
-        return ""
-    
-    def temp_file(self, suffix=""):
-        """Return a temporary file path for ephemeral use."""
-        return tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-
-@dataclass
-class TTSReviewSegmentState:
-    segment_id: str
-    start: float | None
-    end: float | None
-    speaker_id: str | None
-    text: str
-    lang: str | None
-    audio_url: str
-    sample_rate: int | None
-
-
-@dataclass
-class TTSReviewSession:
-    run_id: str
-    language: str
-    tts_model: str
-    workspace: Path
-    translation: ASRResponse
-    tts_response: TTSResponse
-    segments: Dict[str, TTSReviewSegmentState]
-    lock: asyncio.Lock
-    future: asyncio.Future[bool]
-    languages: List[str]
-
-
-@dataclass
-class TranscriptionReviewSession:
-    run_id: str
-    audio_duration: float
-    audio_path: Optional[str]
-    languages: List[str]
-    tolerance: float
-
-
 async def run_in_thread(func, *args, **kwargs):
     return await asyncio.to_thread(func, *args, **kwargs)
 
@@ -448,19 +432,7 @@ async def run_subprocess(cmd: List[str], *, description: str) -> subprocess.Comp
     except subprocess.CalledProcessError as exc:
         logger.error("%s\nSTDOUT: %s\nSTDERR: %s", description, exc.stdout, exc.stderr)
         raise HTTPException(500, f"{description}: {exc.stderr}") from exc
-
-
-def resolve_media_path(video_url: str) -> str:
-    if video_url.startswith(("http://", "https://")):
-        return video_url
-
-    video_path = Path(video_url)
-    if not video_path.is_absolute():
-        video_path = BASE / video_url
-    if not video_path.exists():
-        raise HTTPException(404, f"Media file not found: {video_url}")
-    return str(video_path)
-
+    
 
 async def download_media_to_workspace(source_url: str, download_dir: Path) -> Path:
     logger.info("Downloading remote media: %s", source_url)
@@ -524,14 +496,13 @@ async def download_media_to_workspace(source_url: str, download_dir: Path) -> Pa
 async def prepare_media_source(
     source: str,
     workspace: WorkspaceManager,
-    temp_dir_factory: Callable[[str], Path],
 ) -> Path:
     if not source:
         raise HTTPException(400, "video_url must be provided")
 
     source = source.strip()
     if source.startswith(("http://", "https://")):
-        download_dir = workspace.ensure_dir("downloads") if workspace.persist_intermediate else temp_dir_factory("downloads")
+        download_dir = workspace.ensure_dir("downloads") if workspace.persist_intermediate else workspace.make_temp_dir("downloads")
         local_path = await download_media_to_workspace(source, download_dir)
     else:
         local_path = Path(resolve_media_path(source))
@@ -593,14 +564,9 @@ async def extract_audio_to_workspace(source_url: str, raw_audio_path: Path) -> N
 
     if not raw_audio_path.exists() or raw_audio_path.stat().st_size == 0:
         raise HTTPException(500, "Audio extraction produced an empty file")
+    
 
-
-def separation_cache_key(raw_audio_path: Path, sep_model: str) -> str:
-    stat = raw_audio_path.stat()
-    key = f"{raw_audio_path.stat().st_size}-{stat.st_mtime_ns}-{sep_model}"
-    return hashlib.sha1(key.encode("utf-8")).hexdigest()
-
-
+# find a way to delete the cached files after some time or size limit
 async def load_cached_separation(cache_key: str, vocals_target: Path, background_target: Path) -> bool:
     cache_dir = SEPARATION_CACHE / cache_key
     vocals_cache = cache_dir / "vocals.wav"
@@ -619,7 +585,7 @@ async def store_separation_cache(cache_key: str, vocals_source: Path, background
     await run_in_thread(shutil.copy, vocals_source, cache_dir / "vocals.wav")
     await run_in_thread(shutil.copy, background_source, cache_dir / "background.wav")
 
-
+# see if we can implement automatic noise level detection in future improvements work. to judge if separation is needed for some tasks
 async def maybe_run_audio_separation(
     preprocessing_dir: Path,
     raw_audio_path: Path,
@@ -627,7 +593,7 @@ async def maybe_run_audio_separation(
     audio_sep: bool,
     dubbing_strategy: str,
 ) -> Tuple[Optional[Path], Optional[Path], str]:
-    if not audio_sep and dubbing_strategy != "full_replacement":
+    if not audio_sep and dubbing_strategy != "full_replacement": # here we just supposed that if audio separation is disabled and the strategy is not full replacement we don't need to do separation
         return None, None, dubbing_strategy
     
     vocals_path = preprocessing_dir / "vocals.wav"
@@ -657,8 +623,8 @@ async def maybe_run_audio_separation(
         return None, None, "default"
 
     if not vocals_path.exists() or not background_path.exists():
-        logger.warning("Separation completed but expected stems are missing; falling back to default dubbing strategy")
-        return None, None, "default"
+        logger.warning("Separation completed but expected stems are missing; falling back to user original audio and translation over dubbing strategy")
+        return None, None, "translation_over"
 
     await store_separation_cache(cache_key, vocals_path, background_path)
     return vocals_path, background_path, dubbing_strategy
@@ -691,9 +657,8 @@ async def run_asr_step(
 
     raw_result = ASRResponse(**raw_resp.json())
     ensure_segment_ids(raw_result)
-    if not raw_result.audio_url:
-        raw_result.audio_url = str(raw_audio_path)
-    raw_result.extra = dict(raw_result.extra or {})
+    raw_result.audio_url = str(raw_audio_path)
+
     if min_speakers is not None:
         raw_result.extra["min_speakers"] = min_speakers
     if max_speakers is not None:
@@ -703,7 +668,6 @@ async def run_asr_step(
         return raw_result, None
 
     align_payload = ASRResponse(**raw_result.model_dump())
-    align_payload.extra = dict(align_payload.extra or {})
     align_payload.extra["enable_diarization"] = diarize
 
     aligned_result = await align_asr_transcription(client, asr_model, align_payload, diarize=diarize)
@@ -805,35 +769,8 @@ async def run_tts_review_session(
     if key in TTS_REVIEW_SESSIONS:
         raise HTTPException(409, "TTS review already in progress for this run and language.")
 
-    ensure_segment_ids(translation)
-    translation_map: Dict[str, Segment] = {seg.segment_id: seg for seg in translation.segments if seg.segment_id}
-    segments_state: Dict[str, TTSReviewSegmentState] = {}
-
-    for seg_audio in tts_result.segments:
-        if not seg_audio.segment_id:
-            seg_audio.segment_id = str(uuid.uuid4())
-        seg_id = seg_audio.segment_id
-        segment = translation_map.get(seg_id)
-        if segment is None:
-            continue
-        audio_url = normalize_audio_url(seg_audio.audio_url)
-        if not audio_url:
-            continue
-        if not segment.lang and language:
-            segment.lang = language
-        segments_state[seg_id] = TTSReviewSegmentState(
-            segment_id=seg_id,
-            start=segment.start,
-            end=segment.end,
-            speaker_id=segment.speaker_id,
-            text=segment.text,
-            lang=segment.lang or language,
-            audio_url=audio_url,
-            sample_rate=seg_audio.sample_rate,
-        )
-
-    if not segments_state:
-        return
+    translation_map: Dict[str, Segment] = {seg.segment_id: seg for seg in translation.segments if seg.segment_id} # used to access the value linked to the id in 0(1)
+    segments_state: Dict[str, SegmentAudioOut] = { seg.segment_id: seg for seg in tts_result.segments if seg.segment_id}
     
     worker = TTS_WORKERS.get(tts_model)
     available_languages = []
@@ -847,7 +784,7 @@ async def run_tts_review_session(
         language=language or "",
         tts_model=tts_model,
         workspace=workspace_path,
-        translation=translation,
+        translation=translation_map,
         tts_response=tts_result,
         segments=segments_state,
         lock=asyncio.Lock(),
@@ -885,30 +822,30 @@ async def regenerate_tts_segment_audio(
     segment_id: str,
     text: str,
     lang: Optional[str],
-) -> TTSReviewSegmentState:
+) -> SegmentAudioOut:
     async with session.lock:
         state = session.segments.get(segment_id)
         if state is None:
             raise HTTPException(404, "Segment not found in current TTS review session.")
 
-        translation_segment = next((seg for seg in session.translation.segments if seg.segment_id == segment_id), None)
+        translation_segment = session.translation.get(segment_id)
         if translation_segment is None:
             raise HTTPException(404, "Segment not available for regeneration.")
 
         updated_text = text.strip()
         translation_segment.text = updated_text
-        desired_lang = (lang or translation_segment.lang or session.language or state.lang)
+        desired_lang = (lang or translation_segment.lang or session.language)
         translation_segment.lang = desired_lang
-        state.text = translation_segment.text
-        state.lang = translation_segment.lang
+        state.lang = desired_lang
+        state.text = updated_text
 
         segment_input = SegmentAudioIn(
-            start=translation_segment.start,
-            end=translation_segment.end,
-            text=translation_segment.text,
-            speaker_id=translation_segment.speaker_id,
-            lang=translation_segment.lang,
-            audio_prompt_url=translation_segment.audio_url if translation_segment.audio_url else None,
+            start=state.start,
+            end=state.end,
+            text=state.text,
+            speaker_id=state.speaker_id,
+            lang=state.lang,
+            audio_prompt_url= state.audio_url,
             segment_id=segment_id,
             legacy_audio_path=state.audio_url,
         )
@@ -927,19 +864,10 @@ async def regenerate_tts_segment_audio(
         if not regenerated.segments:
             raise HTTPException(500, "TTS regeneration yielded no audio segments.")
         regenerated_segment = regenerated.segments[0]
-        audio_url = normalize_audio_url(regenerated_segment.audio_url) or state.audio_url
+        audio_url = regenerated_segment.audio_url or state.audio_url
 
         state.audio_url = audio_url
         state.sample_rate = regenerated_segment.sample_rate
-
-        for existing in session.tts_response.segments:
-            if existing.segment_id == segment_id:
-                existing.audio_url = regenerated_segment.audio_url
-                existing.lang = regenerated_segment.lang
-                existing.sample_rate = regenerated_segment.sample_rate
-                break
-        else:
-            session.tts_response.segments.append(regenerated_segment)
 
         return state
 
@@ -955,7 +883,6 @@ async def trim_tts_segments(tts_result: TTSResponse, vad_dir: Path) -> TTSRespon
                 trim_audio_with_vad,
                 audio_path=seg.audio_url,
                 output_path=trimmed_audio,
-                several_seg=False,
             )
             seg.audio_url = str(output_path)
         except Exception as exc:  # noqa: BLE001
@@ -976,8 +903,8 @@ async def concatenate_segments(
         segments=tts_segments,
         output_file=str(output_file),
         target_duration=target_duration,
-        alpha=0.25,
-        min_dur=0.4,
+        alpha=general_cfg.get("concatenation", {}).get("alpha", 0.25),
+        min_dur=general_cfg.get("concatenation", {}).get("min_dur", 0.4),
         translation_segments=translation_segments,
     )
 
@@ -994,7 +921,7 @@ async def overlay_segments_on_background(
         segments,
         background_path=str(background_path),
         output_path=str(output_path),
-        ducking_db=0.0,
+        ducking_db=general_cfg.get("overlay_on_background", {}).get("ducking_db", 0.0),
         sophisticated=sophisticated,
         speech_track=str(speech_track),
     )
@@ -1031,7 +958,7 @@ async def finalize_media(
     style: Optional[Any],
     mobile_optimized: bool,
     dubbing_strategy: str,
-    orig_duck: float = 0.02,
+    orig_duck: float = general_cfg.get("finalize_media", {}).get("ducking_db", 0.02),
 ) -> None:
     await run_in_thread(
         final,
@@ -1046,16 +973,25 @@ async def finalize_media(
         orig_duck=orig_duck,
     )
 
-
-def parse_bool(value: Optional[str]) -> bool:
-    if value is None:
-        return False
-    return value.lower() in {"1", "true", "on", "yes"}
+#-------------------------------------------------------------------------------------------------------------#
+#--------------------------------------------------------------------------------------------------------------#
 
 
-def safe_filename(name: str) -> str:
-    stem = Path(name or "upload").name
-    return stem.replace(" ", "_") or "upload"
+
+@app.on_event("startup")
+async def startup_event() -> None:
+    timeout = httpx.Timeout(connect=10.0, read=1200.0, write=10.0, pool=None) # think changing the value of the pool in the future for more robustness
+    app.state.http_client = httpx.AsyncClient(timeout=timeout)
+    OUTS.mkdir(parents=True, exist_ok=True)
+    SEPARATION_CACHE.mkdir(parents=True, exist_ok=True)
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+@app.on_event("shutdown")
+async def shutdown_event() -> None:
+    client = getattr(app.state, "http_client", None)
+    if client:
+        await client.aclose()
 
 
 @app.get(OPTIONS_ROUTE)
@@ -1116,36 +1052,6 @@ async def pipeline_stop(run_id: str = Form(...)) -> JSONResponse:
     return JSONResponse({"status": "cancelling"})
 
 
-class TranscriptionReviewRequest(BaseModel):
-    run_id: str
-    transcription: ASRResponse
-
-
-class AlignmentReviewRequest(BaseModel):
-    run_id: str
-    alignment: ASRResponse
-
-
-class TTSReviewSegmentUpdate(BaseModel):
-    segment_id: str
-    text: str
-    lang: Optional[str] = None
-
-
-class TTSReviewRequest(BaseModel):
-    run_id: str
-    language: Optional[str] = None
-    segments: List[TTSReviewSegmentUpdate] = Field(default_factory=list)
-
-
-class TTSRegenerateRequest(BaseModel):
-    run_id: str
-    language: Optional[str] = None
-    segment_id: str
-    text: str
-    lang: Optional[str] = None
-
-
 @app.post(f"{JOBS_PREFIX}/transcription_review")
 async def pipeline_submit_transcription_review(review: TranscriptionReviewRequest) -> JSONResponse:
     run_id = (review.run_id or "").strip()
@@ -1159,27 +1065,9 @@ async def pipeline_submit_transcription_review(review: TranscriptionReviewReques
     session = TRANSCRIPTION_REVIEW_SESSIONS.get(run_id)
     audio_duration = session.audio_duration if session else None
     tolerance = session.tolerance if session else TRANSCRIPTION_SEGMENT_TOLERANCE
-    audio_candidates: List[str] = []
-    if session and session.audio_path:
-        audio_candidates.append(session.audio_path)
-    if review.transcription.audio_url:
-        audio_candidates.append(review.transcription.audio_url)
-    for candidate in audio_candidates:
-        candidate_str = (candidate or "").strip()
-        if not candidate_str:
-            continue
-        candidate_path = Path(candidate_str)
-        if not candidate_path.exists():
-            continue
-        try:
-            duration_candidate = get_audio_duration(candidate_path)
-        except Exception:
-            continue
-        if duration_candidate and duration_candidate > 0:
-            audio_duration = duration_candidate
-            break
     if audio_duration is not None and audio_duration <= tolerance:
         audio_duration = None
+
     allowed_languages = set((session.languages or []) if session else [])
     segments = review.transcription.segments or []
     sanitized: List[Segment] = []
@@ -1259,7 +1147,7 @@ async def pipeline_submit_tts_review(review: TTSReviewRequest) -> JSONResponse:
 
     updates = {item.segment_id: item for item in review.segments}
     async with session.lock:
-        for segment in session.translation.segments:
+        for segment in session.translation.values():
             if not segment.segment_id:
                 continue
             update = updates.get(segment.segment_id)
@@ -1324,7 +1212,6 @@ async def pipeline_run(
         file: UploadFile | None = File(None),
         video_url: Optional[str] = Form(None),
         target_work: str = Form("dub"),
-        target_lang: Optional[str] = Form(None),
         target_langs: Optional[List[str]] = Form(None),
         source_lang: Optional[str] = Form(None),
         min_speakers: Optional[int] = Form(None),
@@ -1344,19 +1231,17 @@ async def pipeline_run(
         involve_mode: str = Form("false"),
     ) -> StreamingResponse:
         uploads_dir = UPLOADS_DIR
-        uploads_dir.mkdir(parents=True, exist_ok=True)
+        uploads_dir.mkdir(parents=True, exist_ok=True) # ensure uploads dir exists, just in case normally should be there already because of app startup
 
         target_work = (target_work or "dub").strip().lower() or "dub"
         if target_work not in {"dub", "sub"}:
             target_work = "dub"
-        target_lang = (target_lang or "").strip() or None
-        normalized_langs = normalize_language_codes((target_langs or []) + ([target_lang] if target_lang else []))
-        target_lang = normalized_langs[0] if normalized_langs else None
+        normalized_langs = normalize_language_codes((list(target_langs)) if target_langs else [])
         source_lang = (source_lang or "").strip() or None
-        asr_model = (asr_model or "").strip()
-        tr_model = (tr_model or "").strip()
-        tts_model = (tts_model or "").strip()
-        sep_model = (sep_model or "").strip()
+        asr_model = asr_model if asr_model != "auto" else general_cfg.get("default_models", {}).get("asr", "whisperx")
+        tr_model = tr_model if tr_model != "auto" else general_cfg.get("default_models", {}).get("tr", "facebook_m2m100")
+        tts_model = tts_model if tts_model != "auto" else general_cfg.get("default_models", {}).get("tts", "chatterbox")
+        sep_model = sep_model if sep_model != "auto" else general_cfg.get("default_models", {}).get("sep", "melband_roformer_big_beta5e.ckpt")
         translation_strategy = (translation_strategy or "default").strip() or "default"
         dubbing_strategy = (dubbing_strategy or "default").strip() or "default"
         subtitle_style = (subtitle_style or "").strip() or None
@@ -1403,7 +1288,6 @@ async def pipeline_run(
                 result = await dub(
                     video_url=str(source_media),
                     target_work=target_work,
-                    target_lang=target_lang,
                     target_langs=normalized_langs,
                     source_lang=source_lang,
                     min_speakers=min_speakers,
@@ -1532,11 +1416,6 @@ async def pipeline_run(
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
-@app.get("/healthz")
-def healthz():
-    return {"ok": True}
-
-
 @app.post("/v1/dub")
 async def dub(
     video_url: str,
@@ -1544,8 +1423,7 @@ async def dub(
         "dub",
         description="Target work type, e.g., 'dub': for full dubbing or 'sub': for subtitles only",
     ),
-    target_lang: Optional[str] = None,
-    target_langs: Optional[List[str]] = Query(None),
+    target_langs: Optional[List[str] | str] = Query(None),
     source_lang: Optional[str] = None,
     min_speakers: Optional[int] = None,
     max_speakers: Optional[int] = None,
@@ -1587,25 +1465,6 @@ async def dub(
     """
     Complete dubbing pipeline orchestrator.
     """
-    target_work = unwrap_param(target_work)
-    target_lang = unwrap_param(target_lang)
-    target_langs = unwrap_param(target_langs)
-    source_lang = unwrap_param(source_lang)
-    min_speakers = unwrap_param(min_speakers)
-    max_speakers = unwrap_param(max_speakers)
-    sep_model = unwrap_param(sep_model)
-    asr_model = unwrap_param(asr_model)
-    tr_model = unwrap_param(tr_model)
-    tts_model = unwrap_param(tts_model)
-    audio_sep = unwrap_param(audio_sep)
-    perform_vad_trimming = unwrap_param(perform_vad_trimming)
-    translation_strategy = unwrap_param(translation_strategy)
-    dubbing_strategy = unwrap_param(dubbing_strategy)
-    sophisticated_dub_timing = unwrap_param(sophisticated_dub_timing)
-    subtitle_style = unwrap_param(subtitle_style)
-    persist_intermediate = unwrap_param(persist_intermediate)
-    involve_mode = unwrap_param(involve_mode)
-    run_id = unwrap_param(run_id)
 
     if involve_mode and not run_id:
         raise HTTPException(400, "Involve mode requires an active run context (run_id).")
@@ -1618,55 +1477,14 @@ async def dub(
         dubbing_strategy = "full_replacement" # other values default to full_replacement
 
     source_lang = (source_lang or "").strip() or None
-    target_lang = (target_lang or "").strip() or None
-    target_languages = normalize_language_codes((target_langs or []) + ([target_lang] if target_lang else []))
-    target_lang = target_languages[0] if target_languages else None
+    target_languages = target_langs
 
     sep_model = (sep_model or "").strip()
-    if not sep_model or sep_model.lower() == "auto":
-        # Try the default value for dub first
-        default_sep = "melband_roformer_big_beta5e.ckpt"
-        separation_options = list_audio_separation_models()
-        found = False
-        # Check if default_sep exists in the available models
-        for group in separation_options:
-            for option in group.get("models", []):
-                if option.get("filename") == default_sep:
-                    sep_model = default_sep
-                    found = True
-                    break
-            if found:
-                break
-        # If not found, pick the first available model
-        if not found:
-            for group in separation_options:
-                for option in group.get("models", []):
-                    candidate = option.get("filename")
-                    if candidate:
-                        sep_model = candidate
-                        found = True
-                        break
-                if found:
-                    break
-        if not found:
-            raise HTTPException(500, "No audio separation models available")
 
-    requested_tr_model = tr_model
-    requested_tts_model = tts_model
+    requested_tr_model = (tr_model or "").strip()
+    requested_tts_model = (tts_model or "").strip()
 
-    asr_model = resolve_model_choice(asr_model, ASR_WORKERS, source_lang, fallback="whisperx")
-    default_translation_model = resolve_model_choice(
-        requested_tr_model,
-        TR_WORKERS,
-        target_lang or source_lang,
-        fallback="facebook_m2m100",
-    )
-    default_tts_model = resolve_model_choice(
-        requested_tts_model,
-        TTS_WORKERS,
-        target_lang,
-        fallback="chatterbox",
-    )
+    asr_model = resolve_model_choice(asr_model, ASR_WORKERS, source_lang, fallback= general_cfg.get("default_models", {}).get("asr", "whisperx"))
 
     translation_models_by_lang: Dict[str, str] = {}
     tts_models_by_lang: Dict[str, str] = {}
@@ -1676,19 +1494,19 @@ async def dub(
             requested_tr_model,
             TR_WORKERS,
             lang or source_lang,
-            fallback=default_translation_model,
+            fallback= general_cfg.get("default_models", {}).get("tr", "facebook_m2m100"),
         )
         tts_models_by_lang[lang] = resolve_model_choice(
             requested_tts_model,
             TTS_WORKERS,
             lang,
-            fallback=default_tts_model,
+            fallback= general_cfg.get("default_models", {}).get("tts", "chatterbox"),
         )
 
     selected_models = {
         "asr": asr_model,
-        "translation": translation_models_by_lang or default_translation_model,
-        "tts": tts_models_by_lang or default_tts_model,
+        "translation": translation_models_by_lang,
+        "tts": tts_models_by_lang,
         "separation": sep_model,
     }
 
@@ -1701,29 +1519,19 @@ async def dub(
     step_timer = StepTimer()
     client = get_http_client()
 
-    temp_dirs: List[Path] = []
     subtitles_dir: Optional[Path] = None
 
-    def make_temp_dir(label: str) -> Path:
-        if workspace.persist_intermediate:
-            return workspace.ensure_dir(label)
-        temp_root = workspace.ensure_dir("_temp")
-        path = Path(tempfile.mkdtemp(prefix=f"bluez_{label}_", dir=temp_root))
-        temp_dirs.append(path)
-        return path
-
-    resolved_video_path = await prepare_media_source(video_url, workspace, make_temp_dir)
+    resolved_video_path = await prepare_media_source(video_url, workspace)
     source_media_local_path: Optional[Path] = resolved_video_path
 
     if workspace.persist_intermediate:
         preprocessing_dir = workspace.ensure_dir("preprocessing")
     else:
-        preprocessing_dir = make_temp_dir("preprocessing")
+        preprocessing_dir = workspace.make_temp_dir("preprocessing")
 
     raw_audio_path = preprocessing_dir / "raw_audio.wav"
 
     cancelled = False
-    raw_audio_duration: float = 0.0
 
     try:
         with step_timer.time("extract_audio"):
@@ -1734,7 +1542,7 @@ async def dub(
         vocals_path: Optional[Path] = None
         background_path: Optional[Path] = None
 
-        if target_work != "sub":
+        if target_work != "sub": # in subtitle-only mode, no need to separate audio for now: in future we might want to do it for better ASR performance if we succeed to implement automatic noise level detection
             with step_timer.time("audio_separation"):
 
                 vocals_path, background_path, dubbing_strategy = await maybe_run_audio_separation(
@@ -1791,7 +1599,7 @@ async def dub(
             })
             emit_progress({"type": "status", "event": "awaiting_transcription_review"})
             reviewed_result = await wait_for_transcription_review(run_id)
-
+    
             merged_extra = dict(raw_asr_result.extra or {})
             merged_extra.update(reviewed_result.extra or {})
             reviewed_result.extra = merged_extra
@@ -1799,17 +1607,13 @@ async def dub(
                 reviewed_result.audio_url = raw_asr_result.audio_url or str(raw_audio_path)
             if not reviewed_result.language:
                 reviewed_result.language = raw_asr_result.language
-            if min_speakers is not None:
-                reviewed_result.extra["min_speakers"] = min_speakers
-            if max_speakers is not None:
-                reviewed_result.extra["max_speakers"] = max_speakers
+
+            reviewed_result.segments = sorted(
+                reviewed_result.segments,
+                key=lambda seg: seg.start if seg.start is not None else 0.0,
+            )
 
             raw_asr_result = reviewed_result
-            raw_asr_result.WordSegments = None
-            for segment in raw_asr_result.segments:
-                segment.words = None
-
-            raw_asr_result.extra = dict(raw_asr_result.extra or {})
             raw_asr_result.extra.setdefault("enable_diarization", True)
             aligned_asr_result = await align_asr_transcription(
                 client,
@@ -1821,10 +1625,8 @@ async def dub(
 
         asr_raw_path = workspace.maybe_dump_json("asr/asr_0_result.json", raw_asr_result.model_dump())
 
-        if involve_mode:
-            source_lang = raw_asr_result.language or source_lang
-        else:
-            source_lang = source_lang or raw_asr_result.language
+        source_lang = raw_asr_result.language or source_lang
+        
 
         if aligned_asr_result is None:
             raise HTTPException(500, "ASR alignment result missing after transcription stage.")
@@ -1856,9 +1658,7 @@ async def dub(
                 reviewed_alignment.audio_url = aligned_asr_result.audio_url or raw_asr_result.audio_url
             if not reviewed_alignment.language:
                 reviewed_alignment.language = aligned_asr_result.language or raw_asr_result.language
-            reviewed_alignment.WordSegments = None
-            for segment in reviewed_alignment.segments:
-                segment.words = None
+            
             reviewed_alignment.segments = sorted(
                 reviewed_alignment.segments,
                 key=lambda seg: seg.start if seg.start is not None else 0.0,
@@ -1881,7 +1681,7 @@ async def dub(
                 if workspace.persist_intermediate:
                     subtitles_dir = workspace.ensure_dir("subtitles")
                 else:
-                    subtitles_dir = make_temp_dir("subtitles")
+                    subtitles_dir = workspace.make_temp_dir("subtitles")
 
                 srt_path_0, vtt_path_0 = build_subtitles_from_asr_result(
                     data=aligned_asr_result.model_dump(),
@@ -1898,8 +1698,8 @@ async def dub(
             else aligned_asr_result.model_dump()["segments"]
         )
 
-        languages_to_process = target_languages or ([target_lang] if target_lang else [])
-        default_language = target_lang if target_lang else (languages_to_process[0] if languages_to_process else None)
+        languages_to_process = target_languages
+        default_language = target_languages[0] if target_languages else (source_lang if target_work == "sub" else None)
 
         subtitles_per_language: Dict[str, Dict[str, Dict[str, str]]] = {}
         language_payloads: Dict[str, Dict[str, Any]] = {}
@@ -1920,7 +1720,7 @@ async def dub(
                     with step_timer.time(f"translation[{lang}]"):
                         tr_result = await run_translation_step(
                             client,
-                            translation_models_by_lang.get(lang, default_translation_model),
+                            translation_models_by_lang.get(lang, general_cfg.get("default_models", {}).get("tr", "facebook_m2m100")),
                             segments_for_translation,
                             source_lang,
                             lang,
@@ -1985,8 +1785,8 @@ async def dub(
 
             async def process_language(lang: str) -> Tuple[str, Dict[str, Any]]:
                 lang_suffix = f"[{lang}]"
-                translation_model_key = translation_models_by_lang.get(lang, default_translation_model)
-                tts_model_key = tts_models_by_lang.get(lang, default_tts_model)
+                translation_model_key = translation_models_by_lang.get(lang, general_cfg.get("default_models", {}).get("tr", "facebook_m2m100"))
+                tts_model_key = tts_models_by_lang.get(lang, general_cfg.get("default_models", {}).get("tts", "chatterbox"))
                 per_language_models[lang] = {"translation": translation_model_key, "tts": tts_model_key}
 
                 with step_timer.time(f"translation{lang_suffix}"):
@@ -1997,10 +1797,7 @@ async def dub(
                         source_lang,
                         lang,
                     )
-                tr_out_path = workspace.maybe_dump_json(
-                    f"translation/{lang}/translation_result.json",
-                    tr_result.model_dump(),
-                )
+                
 
                 if translation_mode == "long" and len(aligned_asr_result.segments) > 1:
                     with step_timer.time(f"translation_alignment{lang_suffix}"):
@@ -2025,33 +1822,25 @@ async def dub(
                 if workspace.persist_intermediate:
                     prompt_audio_dir = workspace.ensure_dir(f"prompts/{lang}")
                 else:
-                    prompt_audio_dir = make_temp_dir(f"prompts_{lang}")
+                    prompt_audio_dir = workspace.make_temp_dir(f"prompts_{lang}")
                 with step_timer.time(f"prompt_attachment{lang_suffix}"):
                     updated = await run_in_thread(
                         attach_segment_audio_clips,
                         asr_dump=tr_result.model_dump(),
                         output_dir=prompt_audio_dir,
-                        min_duration=9.0,
-                        max_duration=40.0,
+                        min_duration= general_cfg.get("prompt_attachment", {}).get("min_duration", 1.0),
+                        max_duration= general_cfg.get("prompt_attachment", {}).get("max_duration", 40.0),
                         one_per_speaker=True,
                     )
                 tr_result_local = ASRResponse(**updated)
-                ensure_segment_ids(tr_result_local)
 
                 if workspace.persist_intermediate:
                     tts_output_dir = workspace.ensure_dir(f"tts/{lang}")
                 else:
-                    tts_output_dir = make_temp_dir(f"tts_{lang}")
+                    tts_output_dir = workspace.make_temp_dir(f"tts_{lang}")
                 with step_timer.time(f"tts{lang_suffix}"):
                     tts_result = await synthesize_tts(client, tts_model_key, tr_result_local, lang, tts_output_dir)
-                tts_out_path = workspace.maybe_dump_json(
-                    f"tts/{lang}/tts_result.json",
-                    tts_result.model_dump(),
-                )
-
-                for seg in tts_result.segments:
-                    if not seg.segment_id:
-                        seg.segment_id = str(uuid.uuid4())
+                
 
                 if involve_mode:
                     await run_tts_review_session(
@@ -2063,11 +1852,21 @@ async def dub(
                         tts_result=tts_result,
                     )
 
+                tr_out_path = workspace.maybe_dump_json(
+                    f"translation/{lang}/translation_result.json",
+                    tr_result_local.model_dump(),
+                )
+
+                tts_out_path = workspace.maybe_dump_json(
+                    f"tts/{lang}/tts_result.json",
+                    tts_result.model_dump(),
+                )
+
                 if perform_vad_trimming:
                     if workspace.persist_intermediate:
                         vad_dir = workspace.ensure_dir(f"vad_trimmed/{lang}")
                     else:
-                        vad_dir = make_temp_dir(f"vad_trimmed_{lang}")
+                        vad_dir = workspace.make_temp_dir(f"vad_trimmed_{lang}")
                     with step_timer.time(f"tts_vad_trim{lang_suffix}"):
                         tts_result = await trim_tts_segments(tts_result, vad_dir)
                     workspace.maybe_dump_json(
@@ -2078,7 +1877,7 @@ async def dub(
                 if workspace.persist_intermediate:
                     audio_processing_dir = workspace.ensure_dir(f"audio_processing/{lang}")
                 else:
-                    audio_processing_dir = make_temp_dir(f"audio_processing_{lang}")
+                    audio_processing_dir = workspace.make_temp_dir(f"audio_processing_{lang}")
                 speech_track = audio_processing_dir / f"dubbed_speech_track_{lang}.wav"
                 with step_timer.time(f"audio_concatenate{lang_suffix}"):
                     concatenated_path, translation_segments = await concatenate_segments(
@@ -2299,7 +2098,7 @@ async def dub(
         raise HTTPException(500, f"Pipeline failed: {exc}") from exc
     finally:
         if not workspace.persist_intermediate:
-            for path in temp_dirs:
+            for path in workspace.temp_dirs:
                 shutil.rmtree(path, ignore_errors=True)
             temp_root = workspace.workspace / "_temp"
             shutil.rmtree(temp_root, ignore_errors=True)

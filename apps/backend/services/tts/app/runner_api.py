@@ -95,7 +95,10 @@ def _get_persistent_worker(cmd: Tuple[str, ...], cwd: Path) -> PersistentWorker:
 def call_worker(model_key: str, payload: BaseModel, out_model: type[T]) -> T:
     vpy, runner, selected_key = get_worker(model_key, payload.language)
     cfg = _load_model_config(selected_key)
-    payload.extra = dict(cfg.get("params", {}))
+    cfg_params = dict(cfg.get("params", {}))
+    existing_extra = getattr(payload, "extra", {}) or {}
+    merged_extra = {**cfg_params, **existing_extra}
+    payload.extra = merged_extra
 
     if not USE_PERSISTENT:
         cmd = [str(vpy), str(runner)]

@@ -18,7 +18,7 @@ _MODEL_LOCK = threading.Lock()
 _LOGGER = None
 
 
-def _get_logger() -> logging.Logger:
+def _get_logger(log_level) -> logging.Logger:
     global _LOGGER
     if _LOGGER is None:
         _LOGGER = logging.getLogger("translation.facebook_m2m100")
@@ -26,7 +26,7 @@ def _get_logger() -> logging.Logger:
             handler = logging.StreamHandler(sys.stderr)
             handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
             _LOGGER.addHandler(handler)
-        _LOGGER.setLevel(logging.INFO)
+        _LOGGER.setLevel(log_level)
         _LOGGER.propagate = False
     return _LOGGER
 
@@ -35,8 +35,8 @@ def _get_device() -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def _load_model(model_name: str) -> Tuple[M2M100ForConditionalGeneration, M2M100Tokenizer, str]:
-    logger = _get_logger()
+def _load_model(model_name: str, log_level: int) -> Tuple[M2M100ForConditionalGeneration, M2M100Tokenizer, str]:
+    logger = _get_logger(log_level)
     with _MODEL_LOCK:
         cached = _MODEL_CACHE.get(model_name)
         if cached:
@@ -59,10 +59,12 @@ def _load_model(model_name: str) -> Tuple[M2M100ForConditionalGeneration, M2M100
 
 
 def _translate(req: TranslateRequest) -> ASRResponse:
-    logger = _get_logger()
+    log_level = req.extra.get("log_level", "INFO").upper()
+    log_level = getattr(logging, log_level, logging.INFO)
+    logger = _get_logger(log_level)
     run_start = time.perf_counter()
     model_name = (req.extra or {}).get("model_name", "facebook/m2m100_418M")
-    model, tokenizer, device = _load_model(model_name)
+    model, tokenizer, device = _load_model(model_name, log_level)
 
     out = ASRResponse()
     skip_special = (req.extra or {}).get("skip_special_tokens", True)

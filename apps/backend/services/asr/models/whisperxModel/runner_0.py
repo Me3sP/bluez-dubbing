@@ -23,19 +23,22 @@ if __name__ == "__main__":
     try:
         BASE = Path(__file__).resolve().parents[4]
         req = ASRRequest(**json.loads(sys.stdin.read()))
+        extra = dict(req.extra or {})
+        log_level = extra.get("log_level", "INFO").upper()
+        log_level = getattr(logging, log_level, logging.INFO)
 
         logger = logging.getLogger("whisperx.runner")
         if not logger.handlers:
             handler = logging.StreamHandler(sys.stderr)
             handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
             logger.addHandler(handler)
-        logger.setLevel(logging.INFO)
+        logger.setLevel(log_level)
         logger.propagate = False
 
         run_start = time.perf_counter()
 
         with contextlib.redirect_stdout(sys.stderr):
-            extra = dict(req.extra or {})
+            
             whisper_model = extra.get("model_name", "large")
             batch_size = extra.get("batch_size", 16)  # reduce if low on GPU mem
             compute_type = extra.get("compute_type", "float16")  # change to "int8" if low on GPU mem (may reduce accuracy)

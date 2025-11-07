@@ -16,13 +16,13 @@ from common_schemas.models import ASRResponse, TranslateRequest, Segment
 import json, sys, os, contextlib, logging, time
 
 
-def _get_logger() -> logging.Logger:
+def _get_logger(log_level) -> logging.Logger:
     logger = logging.getLogger("translation.deep_translator")
     if not logger.handlers:
         handler = logging.StreamHandler(sys.stderr)
         handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
         logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
+    logger.setLevel(log_level)
     logger.propagate = False
     return logger
 
@@ -75,7 +75,11 @@ def build_translator(req: "TranslateRequest", logger: logging.Logger):
 if __name__ == "__main__":
 
     req = TranslateRequest(**json.loads(sys.stdin.read()))
-    logger = _get_logger()
+    # Read from extra config (default to INFO if not set)
+    log_level = req.extra.get("log_level", "INFO").upper()
+    log_level = getattr(logging, log_level, logging.INFO)
+    # Configure logging
+    logger = _get_logger(log_level)
 
     out = ASRResponse()
 

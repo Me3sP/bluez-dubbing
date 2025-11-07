@@ -135,3 +135,4 @@ languages:
 
 params:
   model_name: Google
+  log_level: INFO

@@ -13,13 +13,13 @@ from edge_tts import VoicesManager
 from common_schemas.models import TTSRequest, TTSResponse, SegmentAudioOut
 
 
-def _get_logger() -> logging.Logger:
+def _get_logger(log_level) -> logging.Logger:
     logger = logging.getLogger("tts.edge_tts")
     if not logger.handlers:
         handler = logging.StreamHandler(sys.stderr)
         handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
         logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
+    logger.setLevel(log_level)
     logger.propagate = False
     return logger
 
@@ -142,6 +142,7 @@ async def synthesize_all(req: TTSRequest, out_format: str, default_voice: str, g
         out.segments.append(SegmentAudioOut(
             start=segment.start,
             end=segment.end,
+            text=segment.text,
             audio_url=audio_url,
             speaker_id=segment.speaker_id,
             lang=segment.lang,
@@ -157,7 +158,9 @@ if __name__ == "__main__":
     out_format = general_cfg.get("out_format", "wav")
     default_voice = general_cfg.get("default_voice", "en-US-AriaNeural")
     gender = general_cfg.get("gender", None)
-    logger = _get_logger()
+    log_level = params.get("log_level", "INFO").upper()
+    log_level = getattr(logging, log_level, logging.INFO)
+    logger = _get_logger(log_level)
 
     with contextlib.redirect_stdout(sys.stderr):
         run_start = time.perf_counter()

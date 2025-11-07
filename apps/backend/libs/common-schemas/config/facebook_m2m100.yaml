@@ -106,3 +106,5 @@ params:
   model_name: facebook/m2m100_418M
   # batch decode hyperparameters
   skip_special_tokens: true
+
+  log_level: INFO

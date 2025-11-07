@@ -122,7 +122,7 @@ def trim_audio_with_vad(
     audio_path: str | Path,
     output_path: str | Path = "",
     sampling_rate: int = 16000,
-    several_seg: bool = False
+    several_seg: bool = False # don't put to true for the dubbing pipeline, it is just for testing and see the different voice segments it find for a specific audio
 ) -> Union[ Tuple[float, str], Tuple[List[float], List[str]] ]:
     """
     Trim audio only at the end (keep the beginning):
@@ -330,7 +330,9 @@ def concatenate_audio(segments, output_file, target_duration: Optional[float] = 
             - Remaining time is distributed proportionally to other segments
             - Segments are stretched if needed to fill their allocated time
             - Silence is added between segments to match target duration
-    
+        alpha (float): max autoriseStretch factor for short segments (default: 0.4 meaning can stretch 40% longer)
+        min_dur (float): Minimum duration for segments (default: 0.3)
+        translation_segments (list, optional): List of translation segment dicts to update timings
     Returns:
         str: Path to the concatenated audio file
     """

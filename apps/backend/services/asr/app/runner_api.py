@@ -31,8 +31,7 @@ def call_worker(model_key: str, payload: BaseModel, out_model: type[T], runner_i
     cfg_params = dict(cfg.get("params", {}))
     existing_extra = getattr(payload, "extra", {}) or {}
     merged_extra = {**cfg_params, **existing_extra}
-    if hasattr(payload, "extra"):
-        payload.extra = merged_extra
+    payload.extra = merged_extra
 
     cwd = runner.parent
     uv = UV_BIN
