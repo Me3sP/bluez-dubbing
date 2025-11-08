@@ -31,13 +31,13 @@ body[data-theme="light"] {
     color: #1f2023;
 }
 
-body[data-theme="dark"] section, body[data-theme="dark"] .preview-card {
+body[data-theme="dark"] .control_panel, body[data-theme="dark"] .preview-card {
     background: linear-gradient(145deg, rgba(35, 37, 41, 0.98), rgba(24, 25, 28, 0.92));
     border: 1px solid rgba(78, 80, 88, 0.6);
     box-shadow: 0 24px 48px rgba(0, 0, 0, 0.35);
 }
     
-body[data-theme="light"] section, body[data-theme="light"] .preview-card {
+body[data-theme="light"] .control_panel, body[data-theme="light"] .preview-card {
     background: linear-gradient(145deg, rgba(255, 255, 255, 0.95), rgba(242, 244, 248, 0.9));
     border: 1px solid rgba(208, 214, 222, 0.8);
     box-shadow: 0 20px 45px rgba(45, 55, 72, 0.15);
@@ -52,7 +52,7 @@ main {
     flex: 1 1 auto;
 }
 
-section {
+.control_panel {
     width: min(980px, 96vw);
     margin: 10px auto;
     border-radius: 22px;
@@ -67,7 +67,7 @@ section {
     main {
         grid-template-columns: 1fr 2fr;
     }
-    section {
+    .control_panel {
         overflow-y: auto;
     }
 }
