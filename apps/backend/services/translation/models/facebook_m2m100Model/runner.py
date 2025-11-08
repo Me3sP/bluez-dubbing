@@ -1,7 +1,6 @@
 from __future__ import annotations
 import contextlib
 import json
-import os
 import sys
 import threading
 import logging
@@ -120,23 +119,5 @@ def _run_once():
     sys.stdout.flush()
 
 
-def _loop():
-    while True:
-        line = sys.stdin.readline()
-        if not line:
-            break
-        line = line.strip()
-        if not line:
-            continue
-        req = TranslateRequest(**json.loads(line))
-        with contextlib.redirect_stdout(sys.stderr):
-            out = _translate(req)
-        sys.stdout.write(out.model_dump_json() + "\n")
-        sys.stdout.flush()
-
-
 if __name__ == "__main__":
-    if os.getenv("PERSISTENT_WORKER") == "1":
-        _loop()
-    else:
-        _run_once()
+    _run_once()
