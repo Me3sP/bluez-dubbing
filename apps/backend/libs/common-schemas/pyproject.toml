@@ -14,6 +14,7 @@ dependencies = [
     "pydantic>=2.11.9",
     "sentencepiece>=0.2.1",
     "simalign>=0.4",
+    "pyyaml>=6.0",
     "unidic-lite>=1.0.8",
 ]
 

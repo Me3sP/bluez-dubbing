@@ -13,18 +13,8 @@ from deep_translator import (
     batch_detection,
 )  # any of them is usable but be aware that some require API keys
 from common_schemas.models import ASRResponse, TranslateRequest, Segment
+from common_schemas.service_utils import get_service_logger
 import json, sys, os, contextlib, logging, time
-
-
-def _get_logger(log_level) -> logging.Logger:
-    logger = logging.getLogger("translation.deep_translator")
-    if not logger.handlers:
-        handler = logging.StreamHandler(sys.stderr)
-        handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-        logger.addHandler(handler)
-    logger.setLevel(log_level)
-    logger.propagate = False
-    return logger
 
 
 def build_translator(req: "TranslateRequest", logger: logging.Logger):
@@ -79,7 +69,7 @@ if __name__ == "__main__":
     log_level = req.extra.get("log_level", "INFO").upper()
     log_level = getattr(logging, log_level, logging.INFO)
     # Configure logging
-    logger = _get_logger(log_level)
+    logger = get_service_logger("translation.deep_translator", log_level)
 
     out = ASRResponse()
 

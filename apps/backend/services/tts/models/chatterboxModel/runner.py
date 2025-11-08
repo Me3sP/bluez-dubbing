@@ -13,23 +13,10 @@ import torchaudio as ta
 from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 
 from common_schemas.models import SegmentAudioOut, TTSRequest, TTSResponse
+from common_schemas.service_utils import get_service_logger
 
 _MODEL_CACHE: Dict[Tuple[str, str], Tuple[torch.nn.Module, int]] = {}
 _MODEL_LOCK = threading.Lock()
-_LOGGER = None
-
-
-def _get_logger(log_level) -> logging.Logger:
-    global _LOGGER
-    if _LOGGER is None:
-        _LOGGER = logging.getLogger("tts.chatterbox")
-        if not _LOGGER.handlers:
-            handler = logging.StreamHandler(sys.stderr)
-            handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-            _LOGGER.addHandler(handler)
-        _LOGGER.setLevel(log_level)
-        _LOGGER.propagate = False
-    return _LOGGER
 
 
 def _device() -> str:
@@ -37,7 +24,7 @@ def _device() -> str:
 
 
 def _load_model(model_name: str, device: str, log_level: int):
-    logger = _get_logger(log_level)
+    logger = get_service_logger("tts.chatterbox", log_level)
     key = (model_name, device)
     with _MODEL_LOCK:
         cached = _MODEL_CACHE.get(key)
@@ -62,7 +49,7 @@ def _load_model(model_name: str, device: str, log_level: int):
 def _synthesize(req: TTSRequest) -> TTSResponse:
     log_level = req.extra.get("log_level", "INFO").upper()
     log_level = getattr(logging, log_level, logging.INFO)
-    logger = _get_logger(log_level)
+    logger = get_service_logger("tts.chatterbox", log_level)
     run_start = time.perf_counter()
     workspace_path = Path(req.workspace)
     workspace_path.mkdir(parents=True, exist_ok=True)

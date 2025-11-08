@@ -2,32 +2,19 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from pathlib import Path
-from typing import Dict, TypeVar
+from typing import TypeVar
 
 from pydantic import BaseModel
 
 from .registry import get_worker  # maps model_key -> (venv_python, runner_path)
-import yaml
+from common_schemas.service_utils import load_model_config
 
 T = TypeVar("T", bound=BaseModel)
-BASE = Path(__file__).resolve().parents[1]  # service root
-CONFIG_DIR = BASE.parent.parent / "libs/common-schemas/config"  # ../../libs/common-schemas/config
-CONFIG_CACHE: Dict[str, Dict] = {}
-
-
-def _load_model_config(model_key: str) -> Dict:
-    cfg = CONFIG_DIR / f"{model_key}.yaml"
-    if not cfg.exists():
-        raise RuntimeError(f"configuration file not found for model '{model_key}': {cfg}")
-    if model_key not in CONFIG_CACHE:
-        CONFIG_CACHE[model_key] = yaml.safe_load(cfg.read_text()) or {}
-    return CONFIG_CACHE[model_key]
 
 
 def call_worker(model_key: str, payload: BaseModel, out_model: type[T]) -> T:
     vpy, runner, selected_key = get_worker(model_key, payload.language)
-    cfg = _load_model_config(selected_key)
+    cfg = load_model_config(selected_key)
     cfg_params = dict(cfg.get("params", {}))
     existing_extra = getattr(payload, "extra", {}) or {}
     merged_extra = {**cfg_params, **existing_extra}

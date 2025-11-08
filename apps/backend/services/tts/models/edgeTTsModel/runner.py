@@ -11,17 +11,7 @@ import edge_tts
 from edge_tts import VoicesManager
 
 from common_schemas.models import TTSRequest, TTSResponse, SegmentAudioOut
-
-
-def _get_logger(log_level) -> logging.Logger:
-    logger = logging.getLogger("tts.edge_tts")
-    if not logger.handlers:
-        handler = logging.StreamHandler(sys.stderr)
-        handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-        logger.addHandler(handler)
-    logger.setLevel(log_level)
-    logger.propagate = False
-    return logger
+from common_schemas.service_utils import get_service_logger
 
 
 def convert_mp3_to_wav(src_mp3: Path, dst_wav: Path, sample_rate: int = 24000, channels: int = 1, logger: logging.Logger | None = None) -> None:
@@ -43,6 +33,11 @@ def convert_mp3_to_wav(src_mp3: Path, dst_wav: Path, sample_rate: int = 24000, c
         )
 
 def pick_voice_name(voices: VoicesManager, lang: str, gender: str | None, seed_key: str, default_voice: str) -> str:
+
+    if not lang:
+        logger.warning("No language specified, falling back to default voice.")
+        return default_voice
+    
     # stable selection per seed_key
     rng = random.Random(seed_key)
 
@@ -113,6 +108,7 @@ async def synthesize_all(req: TTSRequest, out_format: str, default_voice: str, g
         key = (segment.speaker_id, segment.lang)
         voice_name = speaker_voice_map.get(key)
         if not voice_name:
+            segment.lang = segment.lang or req.language
             # Default gender (Male or Female), set gender=None for any
             voice_name = pick_voice_name(voices, segment.lang, gender, seed_key=f"{segment.speaker_id}-{segment.lang}", default_voice=default_voice)
             speaker_voice_map[key] = voice_name
@@ -160,7 +156,7 @@ if __name__ == "__main__":
     gender = general_cfg.get("gender", None)
     log_level = params.get("log_level", "INFO").upper()
     log_level = getattr(logging, log_level, logging.INFO)
-    logger = _get_logger(log_level)
+    logger = get_service_logger("tts.edge_tts", log_level)
 
     with contextlib.redirect_stdout(sys.stderr):
         run_start = time.perf_counter()

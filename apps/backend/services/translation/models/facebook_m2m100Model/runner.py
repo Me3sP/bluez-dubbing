@@ -11,23 +11,10 @@ import torch
 from transformers import M2M100ForConditionalGeneration, M2M100Tokenizer
 
 from common_schemas.models import ASRResponse, Segment, TranslateRequest
+from common_schemas.service_utils import get_service_logger
 
 _MODEL_CACHE: Dict[str, Tuple[M2M100ForConditionalGeneration, M2M100Tokenizer, str]] = {}
 _MODEL_LOCK = threading.Lock()
-_LOGGER = None
-
-
-def _get_logger(log_level) -> logging.Logger:
-    global _LOGGER
-    if _LOGGER is None:
-        _LOGGER = logging.getLogger("translation.facebook_m2m100")
-        if not _LOGGER.handlers:
-            handler = logging.StreamHandler(sys.stderr)
-            handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-            _LOGGER.addHandler(handler)
-        _LOGGER.setLevel(log_level)
-        _LOGGER.propagate = False
-    return _LOGGER
 
 
 def _get_device() -> str:
@@ -35,7 +22,7 @@ def _get_device() -> str:
 
 
 def _load_model(model_name: str, log_level: int) -> Tuple[M2M100ForConditionalGeneration, M2M100Tokenizer, str]:
-    logger = _get_logger(log_level)
+    logger = get_service_logger("translation.facebook_m2m100", log_level)
     with _MODEL_LOCK:
         cached = _MODEL_CACHE.get(model_name)
         if cached:
@@ -60,7 +47,7 @@ def _load_model(model_name: str, log_level: int) -> Tuple[M2M100ForConditionalGe
 def _translate(req: TranslateRequest) -> ASRResponse:
     log_level = req.extra.get("log_level", "INFO").upper()
     log_level = getattr(logging, log_level, logging.INFO)
-    logger = _get_logger(log_level)
+    logger = get_service_logger("translation.facebook_m2m100", log_level)
     run_start = time.perf_counter()
     model_name = (req.extra or {}).get("model_name", "facebook/m2m100_418M")
     model, tokenizer, device = _load_model(model_name, log_level)
