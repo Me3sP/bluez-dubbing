@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import hashlib
+import io
 import json
 import logging
 import os
@@ -111,7 +112,11 @@ TTS_URL = "http://localhost:8003/v1/synthesize"
 
 OUTS = BASE / "outs"
 SEPARATION_CACHE = BASE / "cache" / "audio_separation"
+RAW_AUDIO_CACHE = BASE / "cache" / "audio_raw"
+RAW_AUDIO_CACHE_FILENAME = "raw_audio.wav"
 UPLOADS_DIR = BASE / "uploads"
+UPLOAD_HASH_SUBDIR = "by_hash"
+FILE_HASH_CHUNK_SIZE = 4 * 1024 * 1024
 
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv")
 AUDIO_EXTENSIONS = (".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac")
@@ -297,8 +302,8 @@ def get_http_client() -> httpx.AsyncClient:
 
 
 def separation_cache_key(raw_audio_path: Path, sep_model: str) -> str:
-    stat = raw_audio_path.stat()
-    key = f"{raw_audio_path.stat().st_size}-{stat.st_mtime_ns}-{sep_model}"
+    digest = hash_file_contents(raw_audio_path)
+    key = f"{digest}-{sep_model}"
     return hashlib.sha1(key.encode("utf-8")).hexdigest()
 
 
@@ -311,6 +316,101 @@ def parse_bool(value: Optional[str]) -> bool:
 def safe_filename(name: str) -> str:
     stem = Path(name or "upload").name
     return stem.replace(" ", "_") or "upload"
+
+
+def infer_media_digest(path: Path) -> Optional[str]:
+    uploads_hash_root = (UPLOADS_DIR / UPLOAD_HASH_SUBDIR).resolve()
+    try:
+        relative = path.resolve().relative_to(uploads_hash_root)
+    except ValueError:
+        return None
+    parts = relative.parts
+    if len(parts) < 3:
+        return None
+    digest = parts[1]
+    filename = parts[2]
+    if digest and filename.startswith(digest):
+        return digest
+    return None
+
+
+def hash_file_contents(path: Path, *, chunk_size: int = FILE_HASH_CHUNK_SIZE) -> str:
+    hasher = hashlib.sha1()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def persist_uploaded_file(file: UploadFile, uploads_dir: Path) -> Path:
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    temp_path = uploads_dir / f".tmp_{uuid.uuid4().hex}"
+    hasher = hashlib.sha1()
+    try:
+        if hasattr(file.file, "seek"):
+            try:
+                file.file.seek(0)
+            except (OSError, io.UnsupportedOperation, AttributeError):
+                pass
+        bytes_written = 0
+        with temp_path.open("wb") as dest:
+            while True:
+                chunk = file.file.read(FILE_HASH_CHUNK_SIZE)
+                if not chunk:
+                    break
+                dest.write(chunk)
+                hasher.update(chunk)
+                bytes_written += len(chunk)
+        if bytes_written == 0:
+            raise HTTPException(400, "Uploaded file is empty.")
+        digest = hasher.hexdigest()
+        digest_dir = uploads_dir / UPLOAD_HASH_SUBDIR / digest[:2] / digest
+        existing_path: Optional[Path] = None
+        if digest_dir.exists():
+            existing_path = next((p for p in digest_dir.iterdir() if p.is_file()), None)
+        if existing_path:
+            temp_path.unlink(missing_ok=True)
+            return existing_path
+
+        suffix = Path(file.filename or "").suffix or Path(safe_filename(file.filename or "")).suffix or ".bin"
+        digest_dir.mkdir(parents=True, exist_ok=True)
+        final_path = digest_dir / f"{digest}{suffix.lower()}"
+        temp_path.replace(final_path)
+        return final_path
+    finally:
+        if temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+        try:
+            file.file.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def raw_audio_cache_key(media_digest: str) -> str:
+    return media_digest
+
+
+def raw_audio_cache_path(cache_key: str) -> Path:
+    prefix = cache_key[:2] if len(cache_key) >= 2 else "00"
+    return RAW_AUDIO_CACHE / prefix / cache_key / RAW_AUDIO_CACHE_FILENAME
+
+
+async def load_cached_raw_audio(cache_key: str, target_path: Path) -> bool:
+    cache_file = raw_audio_cache_path(cache_key)
+    if not cache_file.exists():
+        return False
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    await run_in_thread(shutil.copy, cache_file, target_path)
+    return True
+
+
+async def store_raw_audio_cache(cache_key: str, source_path: Path) -> None:
+    cache_file = raw_audio_cache_path(cache_key)
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    await run_in_thread(shutil.copy, source_path, cache_file)
 
 
 def emit_progress(event: Dict[str, Any]) -> None:
@@ -496,7 +596,7 @@ async def download_media_to_workspace(source_url: str, download_dir: Path) -> Pa
 async def prepare_media_source(
     source: str,
     workspace: WorkspaceManager,
-) -> Path:
+) -> Tuple[Path, Optional[str]]:
     if not source:
         raise HTTPException(400, "video_url must be provided")
 
@@ -506,6 +606,10 @@ async def prepare_media_source(
         local_path = await download_media_to_workspace(source, download_dir)
     else:
         local_path = Path(resolve_media_path(source))
+
+    media_digest = infer_media_digest(local_path)
+    if media_digest is None:
+        media_digest = hash_file_contents(local_path)
 
     suffix = local_path.suffix or ".mp4"
     source_dir = workspace.ensure_dir("source")
@@ -521,7 +625,7 @@ async def prepare_media_source(
             "preview": preview_payload,
         })
 
-    return destination
+    return destination, media_digest
 
 
 async def extract_audio_to_workspace(source_url: str, raw_audio_path: Path) -> None:
@@ -984,6 +1088,7 @@ async def startup_event() -> None:
     app.state.http_client = httpx.AsyncClient(timeout=timeout)
     OUTS.mkdir(parents=True, exist_ok=True)
     SEPARATION_CACHE.mkdir(parents=True, exist_ok=True)
+    RAW_AUDIO_CACHE.mkdir(parents=True, exist_ok=True)
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -1253,10 +1358,7 @@ async def pipeline_run(
         remote_input_used = False
 
         if file and file.filename:
-            filename = f"{uuid.uuid4()}_{safe_filename(file.filename)}"
-            upload_path = uploads_dir / filename
-            with upload_path.open("wb") as dest:
-                shutil.copyfileobj(file.file, dest)
+            upload_path = persist_uploaded_file(file, uploads_dir)
             source_media = str(upload_path)
             upload_token = str(upload_path.relative_to(uploads_dir))
         elif provided_video_url:
@@ -1521,7 +1623,7 @@ async def dub(
 
     subtitles_dir: Optional[Path] = None
 
-    resolved_video_path = await prepare_media_source(video_url, workspace)
+    resolved_video_path, media_digest = await prepare_media_source(video_url, workspace)
     source_media_local_path: Optional[Path] = resolved_video_path
 
     if workspace.persist_intermediate:
@@ -1534,8 +1636,19 @@ async def dub(
     cancelled = False
 
     try:
-        with step_timer.time("extract_audio"):
-            await extract_audio_to_workspace(str(resolved_video_path), raw_audio_path)
+        raw_audio_cached = False
+        raw_audio_cache_token: Optional[str] = None
+        if media_digest:
+            raw_audio_cache_token = raw_audio_cache_key(media_digest)
+            raw_audio_cached = await load_cached_raw_audio(raw_audio_cache_token, raw_audio_path)
+            if raw_audio_cached:
+                logger.info("Loaded raw audio from cache for media digest %s", media_digest)
+
+        if not raw_audio_cached:
+            with step_timer.time("extract_audio"):
+                await extract_audio_to_workspace(str(resolved_video_path), raw_audio_path)
+            if raw_audio_cache_token:
+                await store_raw_audio_cache(raw_audio_cache_token, raw_audio_path)
 
         raw_audio_duration = get_audio_duration(raw_audio_path)
 
