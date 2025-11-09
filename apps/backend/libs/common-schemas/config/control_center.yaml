@@ -14,7 +14,7 @@ finalize_media:
 
 default_models:
   asr: "whisperx"
-  tr: "facebook_m2m100"
+  tr: "deep_translator"
   tts: "chatterbox"
   sep: "melband_roformer_big_beta5e.ckpt"
 

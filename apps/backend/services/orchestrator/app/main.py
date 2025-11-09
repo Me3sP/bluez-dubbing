@@ -301,8 +301,8 @@ def get_http_client() -> httpx.AsyncClient:
     return client
 
 
-def separation_cache_key(raw_audio_path: Path, sep_model: str) -> str:
-    digest = hash_file_contents(raw_audio_path)
+async def separation_cache_key(raw_audio_path: Path, sep_model: str) -> str:
+    digest = await run_in_thread(hash_file_contents, raw_audio_path)
     key = f"{digest}-{sep_model}"
     return hashlib.sha1(key.encode("utf-8")).hexdigest()
 
@@ -345,7 +345,7 @@ def hash_file_contents(path: Path, *, chunk_size: int = FILE_HASH_CHUNK_SIZE) ->
     return hasher.hexdigest()
 
 
-def persist_uploaded_file(file: UploadFile, uploads_dir: Path) -> Path:
+def _persist_uploaded_file_sync(file: UploadFile, uploads_dir: Path) -> Path:
     uploads_dir.mkdir(parents=True, exist_ok=True)
     temp_path = uploads_dir / f".tmp_{uuid.uuid4().hex}"
     hasher = hashlib.sha1()
@@ -387,6 +387,11 @@ def persist_uploaded_file(file: UploadFile, uploads_dir: Path) -> Path:
             file.file.close()
         except Exception:  # noqa: BLE001
             pass
+
+
+async def persist_uploaded_file(file: UploadFile, uploads_dir: Path) -> Path:
+    # Offload large upload hashing/copying work so we don't block the event loop for UI requests.
+    return await asyncio.to_thread(_persist_uploaded_file_sync, file, uploads_dir)
 
 
 def raw_audio_cache_key(media_digest: str) -> str:
@@ -609,13 +614,13 @@ async def prepare_media_source(
 
     media_digest = infer_media_digest(local_path)
     if media_digest is None:
-        media_digest = hash_file_contents(local_path)
+        media_digest = await run_in_thread(hash_file_contents, local_path)
 
     suffix = local_path.suffix or ".mp4"
     source_dir = workspace.ensure_dir("source")
     destination = source_dir / f"input{suffix}"
     if local_path.resolve() != destination.resolve():
-        shutil.copy2(local_path, destination)
+        await run_in_thread(shutil.copy2, local_path, destination)
 
     preview_payload = build_file_payload(destination)
     if preview_payload:
@@ -703,7 +708,7 @@ async def maybe_run_audio_separation(
     vocals_path = preprocessing_dir / "vocals.wav"
     background_path = preprocessing_dir / "background.wav"
 
-    cache_key = separation_cache_key(raw_audio_path, sep_model)
+    cache_key = await separation_cache_key(raw_audio_path, sep_model)
 
     if await load_cached_separation(cache_key, vocals_path, background_path):
         logger.info("Loaded separated stems from cache")
@@ -1338,19 +1343,6 @@ async def pipeline_run(
         uploads_dir = UPLOADS_DIR
         uploads_dir.mkdir(parents=True, exist_ok=True) # ensure uploads dir exists, just in case normally should be there already because of app startup
 
-        target_work = (target_work or "dub").strip().lower() or "dub"
-        if target_work not in {"dub", "sub"}:
-            target_work = "dub"
-        normalized_langs = normalize_language_codes((list(target_langs)) if target_langs else [])
-        source_lang = (source_lang or "").strip() or None
-        asr_model = asr_model if asr_model != "auto" else general_cfg.get("default_models", {}).get("asr", "whisperx")
-        tr_model = tr_model if tr_model != "auto" else general_cfg.get("default_models", {}).get("tr", "facebook_m2m100")
-        tts_model = tts_model if tts_model != "auto" else general_cfg.get("default_models", {}).get("tts", "chatterbox")
-        sep_model = sep_model if sep_model != "auto" else general_cfg.get("default_models", {}).get("sep", "melband_roformer_big_beta5e.ckpt")
-        translation_strategy = (translation_strategy or "default").strip() or "default"
-        dubbing_strategy = (dubbing_strategy or "default").strip() or "default"
-        subtitle_style = (subtitle_style or "").strip() or None
-        reuse_media_token = (reuse_media_token or "").strip() or None
         provided_video_url = (video_url or "").strip() or None
         source_media: Optional[str] = None
         upload_path: Optional[Path] = None
@@ -1358,7 +1350,7 @@ async def pipeline_run(
         remote_input_used = False
 
         if file and file.filename:
-            upload_path = persist_uploaded_file(file, uploads_dir)
+            upload_path = await persist_uploaded_file(file, uploads_dir)
             source_media = str(upload_path)
             upload_token = str(upload_path.relative_to(uploads_dir))
         elif provided_video_url:
@@ -1390,14 +1382,14 @@ async def pipeline_run(
                 result = await dub(
                     video_url=str(source_media),
                     target_work=target_work,
-                    target_langs=normalized_langs,
+                    target_langs=target_langs,
                     source_lang=source_lang,
                     min_speakers=min_speakers,
                     max_speakers=max_speakers,
-                    sep_model=sep_model or "",
-                    asr_model=asr_model or "",
-                    tr_model=tr_model or "",
-                    tts_model=tts_model or "",
+                    sep_model=sep_model,
+                    asr_model=asr_model,
+                    tr_model=tr_model,
+                    tts_model=tts_model,
                     audio_sep=parse_bool(audio_sep),
                     perform_vad_trimming=parse_bool(perform_vad_trimming),
                     translation_strategy=translation_strategy,
@@ -1420,7 +1412,7 @@ async def pipeline_run(
                             cache_target = uploads_dir / local_source.name
                         cache_target.parent.mkdir(parents=True, exist_ok=True)
                         if local_source.resolve() != cache_target.resolve():
-                            shutil.copy2(local_source, cache_target)
+                            await run_in_thread(shutil.copy2, local_source, cache_target)
                         upload_token = str(cache_target.relative_to(uploads_dir))
                 languages_payload = {}
                 language_outputs = result.get("language_outputs") or {}
@@ -1579,7 +1571,7 @@ async def dub(
         dubbing_strategy = "full_replacement" # other values default to full_replacement
 
     source_lang = (source_lang or "").strip() or None
-    target_languages = target_langs
+    target_languages = normalize_language_codes((list(target_langs)) if target_langs else [])
 
     sep_model = (sep_model or "").strip()
 
@@ -1596,7 +1588,7 @@ async def dub(
             requested_tr_model,
             TR_WORKERS,
             lang or source_lang,
-            fallback= general_cfg.get("default_models", {}).get("tr", "facebook_m2m100"),
+            fallback= general_cfg.get("default_models", {}).get("tr", "deep_translator"),
         )
         tts_models_by_lang[lang] = resolve_model_choice(
             requested_tts_model,
