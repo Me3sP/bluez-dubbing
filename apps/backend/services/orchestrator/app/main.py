@@ -1348,6 +1348,7 @@ async def pipeline_run(
         upload_path: Optional[Path] = None
         upload_token: Optional[str] = None
         remote_input_used = False
+        subtitle_style = (subtitle_style or "").strip() or None # since the Ui might send empty string we convert it to None here
 
         if file and file.filename:
             upload_path = await persist_uploaded_file(file, uploads_dir)
