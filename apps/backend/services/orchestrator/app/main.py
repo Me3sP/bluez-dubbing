@@ -539,7 +539,25 @@ async def run_subprocess(cmd: List[str], *, description: str) -> subprocess.Comp
     except subprocess.CalledProcessError as exc:
         logger.error("%s\nSTDOUT: %s\nSTDERR: %s", description, exc.stdout, exc.stderr)
         raise HTTPException(500, f"{description}: {exc.stderr}") from exc
-    
+
+async def has_video_stream(path: str | Path) -> bool:
+    p = Path(path)
+    # quick short-circuit by extension
+    if p.suffix.lower() in AUDIO_EXTENSIONS:
+        return False
+    cmd = [
+        "ffprobe",
+        "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=index",
+        "-of", "csv=p=0",
+        str(p),
+    ]
+    try:
+        proc = await run_subprocess(cmd, description="ffprobe stream query failed")
+        return bool(proc.stdout.strip())
+    except HTTPException:
+        return False 
 
 async def download_media_to_workspace(source_url: str, download_dir: Path) -> Path:
     logger.info("Downloading remote media: %s", source_url)
@@ -1667,6 +1685,13 @@ async def dub(
     resolved_video_path, media_digest = await prepare_media_source(video_url, workspace)
     source_media_local_path: Optional[Path] = resolved_video_path
 
+    source_has_video = await has_video_stream(resolved_video_path) # better check to avoid issues with audio-only inputs being treated as videos
+
+    if not source_has_video:
+        target_work = "dub"
+        subtitle_style = None
+        dubbing_strategy = "full_replacement"
+
     if workspace.persist_intermediate:
         preprocessing_dir = workspace.ensure_dir("preprocessing")
     else:
@@ -1860,7 +1885,7 @@ async def dub(
 
         srt_path_1 = srt_path_0
         vtt_path_1 = vtt_path_0
-        final_video_path = str(resolved_video_path)
+        final_video_path = str(resolved_video_path) if source_has_video else ""
         default_audio_path = ""
         default_speech_track = ""
 
@@ -1869,6 +1894,7 @@ async def dub(
         style = STYLE_PRESETS.get(subtitle_style_prefix, STYLE_PRESETS["default"]) if subtitle_style is not None else None
 
         if target_work == "sub":
+            # subtitles-only
             if languages_to_process:
                 for lang in languages_to_process:
                     with step_timer.time(f"translation[{lang}]"):
@@ -1934,6 +1960,7 @@ async def dub(
 
             final_video_path = str(final_output) if final_output else str(dubbed_path)
         else:
+            # dubbing
             if not languages_to_process:
                 raise HTTPException(400, "At least one target language must be specified for dubbing")
 
@@ -2028,10 +2055,12 @@ async def dub(
                         tts_result.model_dump(),
                     )
 
-                if workspace.persist_intermediate:
+                if workspace.persist_intermediate or not source_has_video:
                     audio_processing_dir = workspace.ensure_dir(f"audio_processing/{lang}")
                 else:
                     audio_processing_dir = workspace.make_temp_dir(f"audio_processing_{lang}")
+
+                
                 speech_track = audio_processing_dir / f"dubbed_speech_track_{lang}.wav"
                 with step_timer.time(f"audio_concatenate{lang_suffix}"):
                     concatenated_path, translation_segments = await concatenate_segments(
@@ -2081,27 +2110,31 @@ async def dub(
                 else:
                     tr_aligned_tts_path = ""
 
-                dubbed_path = workspace.file_path(f"dubbed_video_{lang}.mp4")
-                final_output = (
-                    workspace.file_path(f"dubbed_video_{lang}_with_{subtitle_style_prefix}_subs.mp4")
-                    if subtitle_style is not None
-                    else None
-                )
-
-                with step_timer.time(f"final_pass{lang_suffix}"):
-                    await finalize_media(
-                        str(resolved_video_path),
-                        final_audio_path,
-                        dubbed_path,
-                        final_output,
-                        Path(aligned_vtt) if aligned_vtt else None,
-                        style,
-                        subtitle_mobile_mode,
-                        dubbing_strategy,
+                final_video_out: str = ""
+                if source_has_video:
+                    dubbed_path = workspace.file_path(f"dubbed_video_{lang}.mp4")
+                    final_output = (
+                        workspace.file_path(f"dubbed_video_{lang}_with_{subtitle_style_prefix}_subs.mp4")
+                        if subtitle_style is not None
+                        else None
                     )
-
+                    with step_timer.time(f"final_pass[{lang}]"):
+                        await finalize_media(
+                            str(resolved_video_path),
+                            final_audio_path,
+                            dubbed_path,
+                            final_output,
+                            Path(aligned_vtt) if aligned_vtt else None,
+                            style,
+                            subtitle_mobile_mode,
+                            dubbing_strategy,
+                        )
+                    final_video_out = str(final_output) if final_output else str(dubbed_path)
+                else:
+                    final_video_out = str(final_audio_path)
+                    
                 payload = {
-                    "final_video_path": str(final_output) if final_output else str(dubbed_path),
+                    "final_video_path": final_video_out,
                     "final_audio_path": str(final_audio_path) if final_audio_path else "",
                     "speech_track": str(speech_track),
                     "subtitles": {"aligned": {"srt": aligned_srt, "vtt": aligned_vtt}},
@@ -2140,7 +2173,7 @@ async def dub(
         def keep_if_persistent(path: Optional[str | Path]) -> str:
             if not path:
                 return ""
-            return str(path) if workspace.persist_intermediate else ""
+            return str(path) if (workspace.persist_intermediate or not source_has_video) else ""
 
         default_audio_path = keep_if_persistent(default_audio_path)
         default_speech_track = keep_if_persistent(default_speech_track)
