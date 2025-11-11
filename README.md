@@ -10,34 +10,43 @@
   border: 1px solid rgba(80, 82, 87, 0.45);
 ">
   <div style="display:flex; align-items:center; gap:14px; margin-bottom:28px;">
-    <img src="apps/frontend/public/assets/icon.png"
+    <img src="apps/frontend/assets/icon.png"
          alt="Bluez icon"
          style="height:64px; width:64px; border-radius:16px; object-fit:cover; box-shadow:0 8px 18px rgba(0,0,0,0.4);">
-    <img src="apps/frontend/public/assets/logo.png"
+    <img src="apps/frontend/assets/logo.png"
          alt="Bluez logo"
          style="height:64px;">
   </div>
-  <h1 style="margin:0 0 8px; font-size:2.75rem; letter-spacing:-0.015em;">Bluez-Dubbing: Multilingual AI Dubbing Pipeline</h1>
+  <h1 style="margin:0 0 8px; font-size:2.75rem; letter-spacing:-0.015em;">Bluez-Dubbing: Multilingual AI Dubbing System</h1>
   <p style="margin:0; font-size:1.05rem; color:#b5bac1;">
     Choose your mode, dub in any language, enjoy crystal-clear vocals.
   </p>
 </div>
 
-Bluez-Dubbing is a modular, production-ready pipeline for **automatic video dubbing** and **subtitle generation**. It leverages state-of-the-art models for ASR (Automatic Speech Recognition), translation, and TTS (Text-to-Speech), supporting advanced features like audio source separation, VAD-based trimming, sophisticated dubbing strategies, and customizable subtitle styles.
+Bluez-Dubbing is a modular, production-ready pipeline for **automatic video dubbing** and **subtitle generation**. It leverages state-of-the-art models for ASR (Automatic Speech Recognition), translation, and TTS (Text-to-Speech), supporting advanced features like audio source separation, VAD-based audio length adjustment, differents sophisticated dubbing strategies, and customizable subtitle styles.
 
 ---
 
 ## 🚀 Features
 
 - **End-to-End Dubbing:** From video/audio input to fully dubbed output with burned-in subtitles.
-- **Web UI (independent app):** A standalone static UI that uploads media, monitors yt-dlp progress, and previews results by calling the backend REST API.
-- **Modular Services:** Pluggable ASR, translation, and TTS models—easily extend or swap components.
-- **Audio Source Separation:** Isolate vocals and background for high-quality dubbing.
-- **Flexible Translation Strategies:** Segment-wise or full-text translation with alignment.
-- **Advanced Dubbing:** Full replacement or overlay strategies, with sophisticated timing and optional VAD trimming.
-- **Subtitle Generation:** Multiple styles (e.g., Netflix, mobile) and formats (SRT, VTT, ASS).
-- **Workspace Management:** All intermediate and final files organized per job with download links.
+- **Support different task:** video dubbing W or W/O subtitle, audio translation, just subtitling ..
 - **REST API & CLI:** FastAPI endpoints plus command-line tooling for automation.
+- **Web UI (independent app):** A standalone Web UI who permit you to use the dubbing system backend in a more convenient way with more ease and give you advance monitoring ability on the dubbing process if you want.
+
+    **1)** You can uploads media, or paste link from a youtube or a social media platform (thanks to yt-dlp), select your options and it the <div style = "display: inline; border: none;border-radius: 999px;padding: 15px 15px;font-size: 1rem;font-weight: 600;cursor: pointer;background: linear-gradient(135deg, #5865F2, #4752C4);color: #fff;">Run dubbing</div> button and that is it.
+
+    **2)** there is 2 functionnement mode: 
+      
+      - the **LAZY-MODE** that is the default(you just lunch and watch it process till the end in full automation and get your final result)
+      - the **INVOLVE-MODE** A elevenlab dubbing studio like mode where you can have a look between the different stage and adjust to you conveniance the result to meet you expectation since the AI models are not fully perfect. for very important project it might be needed.
+
+- **Modular Services:** Pluggable ASR, translation, and TTS models—easily extend or swap components.
+- **Flexible Translation Strategies:** Segment-wise or full-text translation with smart alignment for good sync with original video flow.
+- **Differents audio synchronisation strategies:** Different synchronisation algorithm for seamless and natural audio replacement.
+- **Advanced Dubbing:** Full replacement of original audio with exact background recovery or overlay strategies, with sophisticated timing.
+- **Subtitle Generation:** Multiple styles (e.g., Netflix_mobile, bold_desktop ..) and formats (SRT, VTT, ASS).
+
 
 ---
 
@@ -48,7 +57,7 @@ bluez-dubbing/
 │
 ├── apps/
 │   ├── backend/
-│   │   ├── cache/             # Audio separation caches and intermediates
+│   │   ├── cache/             # Raw Audio/Background/Vocal caches and intermediates
 │   │   ├── libs/
 │   │   │   └── common-schemas/ # Shared Pydantic models, config, and utilities
 │   │   ├── models_cache/      # Downloaded model weights and configs
@@ -57,17 +66,22 @@ bluez-dubbing/
 │   │   │   ├── asr/           # ASR service (WhisperX, etc.)
 │   │   │   ├── orchestrator/  # Main API and pipeline logic
 │   │   │   ├── translation/   # Translation service (deep_translator, etc.)
-│   │   │   └── tts/           # TTS service (Edge TTS, etc.)
+│   │   │   └── tts/           # TTS service (Edge TTS, chatterbox etc.)
 │   │   └── uploads/           # Cached media uploaded through the UI
 │   └── frontend/
-│       └── public/
 │           ├── assets/        # UI icons and branding
-│           └── index.html     # Standalone web application
+│           ├── scripts/       # js modules for the web-UI
+│           ├── styles/        # Main style sheet
+│           └── index.html     # web application
 ├── Makefile
 └── README.md
 ```
 
 ---
+
+## 📽️ Demo
+
+
 
 ## ⚡ Quickstart
 

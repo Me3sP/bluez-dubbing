@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from collections import deque
 import httpx
 import yaml
 
@@ -131,6 +132,7 @@ TRANSCRIPTION_REVIEW_SESSIONS: Dict[str, TranscriptionReviewSession] = {}
 ALIGNMENT_REVIEW_WAITERS: Dict[str, asyncio.Future[ASRResponse]] = {}
 TTS_REVIEW_WAITERS: Dict[tuple[str, str], asyncio.Future[bool]] = {}
 TTS_REVIEW_SESSIONS: Dict[tuple[str, str], TTSReviewSession] = {}
+TTS_REVIEW_QUEUES: Dict[str, deque[tuple[str, str]]] = {}
 TRANSCRIPTION_SEGMENT_TOLERANCE = general_cfg.get("transcript_tolerance", 0.25)
 
 app.mount("/outs", StaticFiles(directory=str(OUTS)), name="outs")
@@ -888,6 +890,7 @@ async def run_tts_review_session(
 
     loop = asyncio.get_running_loop()
     future: asyncio.Future[bool] = loop.create_future()
+    activation_event = asyncio.Event()
     session = TTSReviewSession(
         run_id=run_id,
         language=language or "",
@@ -899,10 +902,18 @@ async def run_tts_review_session(
         lock=asyncio.Lock(),
         future=future,
         languages=available_languages,
+        activate_event=activation_event,
     )
 
     TTS_REVIEW_SESSIONS[key] = session
     TTS_REVIEW_WAITERS[key] = future
+
+    queue = TTS_REVIEW_QUEUES.setdefault(run_id, deque())
+    queue.append(key)
+    if queue[0] == key:
+        activation_event.set()
+
+    await activation_event.wait()
 
     emit_progress(
         {
@@ -925,6 +936,23 @@ async def run_tts_review_session(
         TTS_REVIEW_WAITERS.pop(key, None)
         TTS_REVIEW_SESSIONS.pop(key, None)
 
+        queue = TTS_REVIEW_QUEUES.get(run_id)
+        if queue is not None:
+            was_front = len(queue) > 0 and queue[0] == key
+            try:
+                queue.remove(key)
+            except ValueError:
+                was_front = False
+
+            if was_front and queue:
+                next_key = queue[0]
+                next_session = TTS_REVIEW_SESSIONS.get(next_key)
+                if next_session:
+                    next_session.activate_event.set()
+
+            if not queue:
+                TTS_REVIEW_QUEUES.pop(run_id, None)
+
 
 async def regenerate_tts_segment_audio(
     session: TTSReviewSession,
@@ -932,38 +960,43 @@ async def regenerate_tts_segment_audio(
     text: str,
     lang: Optional[str],
 ) -> SegmentAudioOut:
-    async with session.lock:
-        state = session.segments.get(segment_id)
-        if state is None:
-            raise HTTPException(404, "Segment not found in current TTS review session.")
+    seg_lock = session.segment_locks.get(segment_id)
+    if seg_lock is None:
+        seg_lock = asyncio.Lock()
+        session.segment_locks[segment_id] = seg_lock
 
-        translation_segment = session.translation.get(segment_id)
-        if translation_segment is None:
-            raise HTTPException(404, "Segment not available for regeneration.")
+    async with seg_lock:
+        async with session.lock:
+            state = session.segments.get(segment_id)
+            if state is None:
+                raise HTTPException(404, "Segment not found in current TTS review session.")
 
-        updated_text = text.strip()
-        translation_segment.text = updated_text
-        desired_lang = (lang or translation_segment.lang or session.language)
-        translation_segment.lang = desired_lang
-        state.lang = desired_lang
-        state.text = updated_text
+            translation_segment = session.translation.get(segment_id)
+            if translation_segment is None:
+                raise HTTPException(404, "Segment not available for regeneration.")
 
-        segment_input = SegmentAudioIn(
-            start=state.start,
-            end=state.end,
-            text=state.text,
-            speaker_id=state.speaker_id,
-            lang=state.lang,
-            audio_prompt_url= state.audio_url,
-            segment_id=segment_id,
-            legacy_audio_path=state.audio_url,
-        )
+            updated_text = text.strip()
+            desired_lang = (lang or translation_segment.lang or session.language)
+            fallback_audio = state.audio_url
+            segment_language = desired_lang or state.lang or translation_segment.lang or session.language
+
+            segment_input = SegmentAudioIn(
+                start=state.start,
+                end=state.end,
+                text=updated_text,
+                speaker_id=state.speaker_id,
+                lang=segment_language,
+                audio_prompt_url=state.audio_url,
+                segment_id=segment_id,
+                legacy_audio_path=state.audio_url,
+            )
+            workspace_value = str(session.workspace)
 
         client = get_http_client()
         tts_req = TTSRequest(
             segments=[segment_input],
-            workspace=str(session.workspace),
-            language=translation_segment.lang or session.language,
+            workspace=workspace_value,
+            language=segment_language,
         )
         response = await client.post(TTS_URL, params={"model_key": session.tts_model}, json=tts_req.model_dump())
         if response.status_code != 200:
@@ -973,12 +1006,25 @@ async def regenerate_tts_segment_audio(
         if not regenerated.segments:
             raise HTTPException(500, "TTS regeneration yielded no audio segments.")
         regenerated_segment = regenerated.segments[0]
-        audio_url = regenerated_segment.audio_url or state.audio_url
+        audio_url = regenerated_segment.audio_url or fallback_audio
 
-        state.audio_url = audio_url
-        state.sample_rate = regenerated_segment.sample_rate
+        async with session.lock:
+            state = session.segments.get(segment_id)
+            if state is None:
+                raise HTTPException(404, "Segment no longer available for regeneration.")
+            translation_segment = session.translation.get(segment_id)
+            if translation_segment is None:
+                raise HTTPException(404, "Segment not available for regeneration.")
 
-        return state
+            translation_segment.text = updated_text
+            translation_segment.lang = desired_lang
+
+            state.text = updated_text
+            state.lang = desired_lang
+            state.audio_url = audio_url
+            state.sample_rate = regenerated_segment.sample_rate
+
+            return state
 
 
 async def trim_tts_segments(tts_result: TTSResponse, vad_dir: Path) -> TTSResponse:
@@ -1349,6 +1395,8 @@ async def pipeline_run(
         upload_token: Optional[str] = None
         remote_input_used = False
         subtitle_style = (subtitle_style or "").strip() or None # since the Ui might send empty string we convert it to None here
+        if sep_model == "auto":
+            sep_model = general_cfg.get("default_models", {}).get("sep", "melband_roformer_big_beta5e.ckpt")
 
         if file and file.filename:
             upload_path = await persist_uploaded_file(file, uploads_dir)

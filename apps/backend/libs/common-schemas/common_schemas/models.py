@@ -1,8 +1,8 @@
 from pydantic import BaseModel, Field, computed_field
 from typing import List, Optional, Dict, Any
 from pathlib import Path
-from asyncio import Lock, Future
-from dataclasses import dataclass
+from asyncio import Lock, Future, Event
+from dataclasses import dataclass, field as dataclass_field
 
 # ASR
 class ASRRequest(BaseModel):
@@ -117,6 +117,8 @@ class TTSReviewSession():
     lock: Lock
     future: Future[bool]
     languages: List[str]
+    activate_event: Event
+    segment_locks: Dict[str, Lock] = dataclass_field(default_factory=dict)
 
 @dataclass
 class TranscriptionReviewSession():
