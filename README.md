@@ -67,45 +67,33 @@ bluez-dubbing/
 
 ---
 
+
 ## 📽️ Demo
 
 <table>
   <tr>
     <td colspan="2" align="center">
       <h3>Original Video</h3>
-      <hr>
-      <p>
-        <a href="https://github.com/user-attachments/assets/7202fa21-6d69-4c25-a9d5-077b920a3ee8" target="_blank">
-          https://github.com/user-attachments/assets/7202fa21-6d69-4c25-a9d5-077b920a3ee8
-        </a>
-      </p>
+      <a href="https://github.com/user-attachments/assets/7202fa21-6d69-4c25-a9d5-077b920a3ee8" target="_blank">
+        <img src="https://github.com/user-attachments/assets/53f2df3c-5efa-4a71-9f3c-cf183bb0f542" alt="Original video thumbnail" style="max-width: 800px; width: 100%; border-radius: 12px;">
+      </a>
     </td>
   </tr>
   <tr>
-    <td width="50%">
+    <td width="50%" align="center" valign="top">
       <h3>Dubbed (English) W/O Subtitles</h3>
-      <hr>
-      <p>
-        <a href="https://github.com/user-attachments/assets/86a6098a-e1ee-4336-a131-3f516e8da3cd" target="_blank">
-          https://github.com/user-attachments/assets/86a6098a-e1ee-4336-a131-3f516e8da3cd
-        </a>
-      </p>
+      <a href="https://github.com/user-attachments/assets/86a6098a-e1ee-4336-a131-3f516e8da3cd" target="_blank">
+        <img src="THUMB_EN.jpg" alt="Dubbed English thumbnail" style="max-width: 600px; width: 100%; border-radius: 12px;">
+      </a>
     </td>
-    <td width="50%">
+    <td width="50%" align="center" valign="top">
       <h3>Dubbed (French) With Subtitles</h3>
-      <hr>
-      <p>
-        <a href="https://github.com/user-attachments/assets/cc63b97d-38f2-440e-bf21-a86c84843838" target="_blank">
-          https://github.com/user-attachments/assets/cc63b97d-38f2-440e-bf21-a86c84843838
-        </a>
-      </p>
+      <a href="https://github.com/user-attachments/assets/cc63b97d-38f2-440e-bf21-a86c84843838" target="_blank">
+        <img src="https://github.com/user-attachments/assets/6f08d43d-a9d1-47d0-9084-20fd3a868a43" alt="Dubbed French thumbnail" style="max-width: 600px; width: 100%; border-radius: 12px;">
+      </a>
     </td>
   </tr>
 </table>
-
-
-
-
 
 
 ---
