@@ -1,6 +1,8 @@
 # Contributing to Bluez-Dubbing
 
+
 Bluez-Dubbing is the first open-source project for [Globluez](#notice) and the foundation for many more. We built it because we needed a reliable, budget-friendly dubbing stack for our MVP, and none of the available services (open or closed) matched the requirements without exploding costs. This repository is the first public iteration of that effort: an end-to-end pipeline crafted entirely from open tooling, designed to be battle-tested and extensible. As we grow, we’ll pair these core building blocks with proprietary ASR/MT/TTS models, but we remain committed to keeping the orchestration logic, reference implementations, and solid baseline models available to the community.
+
 
 All contributions are welcome. Please review the guidelines below before opening an issue or PR.
 
@@ -37,18 +39,25 @@ flowchart LR
 ### Quick Guidance on Pipeline Choices
 
 - **ASR variants:** Runner `0` performs transcription (`raw_result`); runner `1` realigns segments with WhisperX word timings and optional diarization so downstream translation/TTS inherits reliable timestamps (`ensure_segment_ids` enforces deterministic IDs).
+
 - **Translation modes:**  
   - `default` / `short`: translates each aligned segment independently; timing stays intact but context is limited, so use it when lip-sync is critical and segments are already meaningful.  
   - `long_proportional`: translates the full transcript as one block, then `ProportionalAligner` redistributes content by duration. Great for speeches or narrations where timing can stay monotonic.  
   - `long_sophisticated`: translates as one block and uses `SophisticatedAligner` (multilingual word alignment with reordering) for languages with different syntax. Gives the richest translations, and we already tuned it to keep boundaries natural even when segments must shift.  
   - `long_sophisticated_merging`: same as above but allows merges when segments have non-monotonic matches or empty targets after realignment—ideal for narrative content where sentences should flow together.
+
 - **TTS prompt attachment:** `attach_segment_audio_clips` smart-cuts speaker-specific prompts (bounded by `prompt_attachment.min/max_duration`) so cloning-friendly TTS engines such as Chatterbox can stay conditioned on the real voice.
+
 - **VAD trimming (`perform_vad_trimming`):** Runs Silero VAD inside `trim_audio_with_vad` to shave trailing silence on each synthesized clip before timing adjustments. Enable when long pauses cause audible gaps; disable if you require raw TTS for review.
+
 - **Concatenation & stretching:** `concatenate_audio` resizes each clip with Rubberband, re-centers them inside their ASR slot, and inserts weighted silence so the stitched speech track matches the raw audio duration. This step also updates translation segment timings so later alignment and subtitles stay consistent.
+
 - **Dubbing strategies:**  
   - `full_replacement`: replaces the entire vocal stem; typically used when source separation succeeded and you want fully localized audio.  
   - `translation_over`: keeps the original mix, pads/ducks it via FFmpeg side-chain compression, and lays TTS on top—useful for documentary-style narration where original ambience must stay audible.
+
 - **Sophisticated dubbing timing (`sophisticated_dub_timing`):** Toggles the overlay backend. When `true`, `overlay_on_background_sophisticated` leverages the already concatenated speech track to craft a dynamic ducking envelope and guarantees perfect sample alignment; disable it to fall back to per-segment overlays (less CPU, tolerant when no clean speech track exists).
+
 - **Subtitles-only path:** If `target_work=sub`, the pipeline stops after translation, builds style-aware subtitles (`STYLE_PRESETS`, `mobile` flag), and runs `finalize_media` only to burn captions (no TTS or overlay required).
 
 > 🛈 Use `OPTIONS_ROUTE` (`/api/options`) to inspect available models and strategies before wiring new contributions to the orchestrator.
@@ -88,9 +97,13 @@ Before submitting, ensure `make test` passes, adhere to the existing code style 
 ### Best Practices & Recommendations
 
 - Keep changes atomic and self-explanatory. If you touch multiple areas (e.g., translation + TTS), split into separate PRs unless the change is inseparable.
+
 - Update documentation (`README.md`, this file, or inline docstrings) whenever you introduce new config keys, CLI flags, or behavior toggles.
+
 - Provide fallback paths or feature flags when adding experimental models or protocols so users can opt out easily.
+
 - For bug fixes, include regression tests or explain why tests are impractical.
+
 - When using AI-assisted code generation, you are fully responsible for verifying the output: review it line by line, ensure it matches project conventions, and prove that it doesn’t break existing flows (tests, dry runs, or sample jobs).
 
 ### Code of Conduct & Professionalism

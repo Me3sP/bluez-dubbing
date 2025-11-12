@@ -82,7 +82,7 @@ https://github.com/user-attachments/assets/7202fa21-6d69-4c25-a9d5-077b920a3ee8
 </td>
 <td width="33%">
 
-### Dubbed (English) W/O subtitles
+### Dubbed (English)
 
 ---
 
@@ -91,7 +91,7 @@ https://github.com/user-attachments/assets/86a6098a-e1ee-4336-a131-3f516e8da3cd
 </td>
 <td width="33%">
 
-### Dubbed (French) with subtitles
+### Dubbed (French)
 
 ---
 
