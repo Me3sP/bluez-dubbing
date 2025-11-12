@@ -77,7 +77,7 @@ bluez-dubbing/
 
 ---
 
-[https://path/to/original/video](https://path/to/original/video)
+https://github.com/user-attachments/assets/7202fa21-6d69-4c25-a9d5-077b920a3ee8
 
 </td>
 <td width="33%">
@@ -86,7 +86,7 @@ bluez-dubbing/
 
 ---
 
-[https://path/to/english/video](https://path/to/english/video)
+https://github.com/user-attachments/assets/86a6098a-e1ee-4336-a131-3f516e8da3cd
 
 </td>
 <td width="33%">
@@ -95,11 +95,19 @@ bluez-dubbing/
 
 ---
 
+https://github.com/user-attachments/assets/cc63b97d-38f2-440e-bf21-a86c84843838
+
+
+
 [https://path/to/french/video](https://path/to/french/video)
 
 </td>
 </tr>
 </table>
+
+
+
+
 
 ---
 
@@ -205,7 +213,7 @@ make stop
 
 ### Web UI
 
-![UI Screenshot](<Screenshot 2025-11-12 121321.png>)
+<img width="2560" height="1485" alt="Screenshot 2025-11-12 121321" src="https://github.com/user-attachments/assets/e2b96024-7bf9-4bb0-85c6-6dc70c418df9" />
 
 After serving the frontend:
 
