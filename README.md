@@ -82,7 +82,7 @@ https://github.com/user-attachments/assets/7202fa21-6d69-4c25-a9d5-077b920a3ee8
 </td>
 <td width="33%">
 
-### Dubbed (English)
+### Dubbed (English) W/O subtitles
 
 ---
 
@@ -91,15 +91,12 @@ https://github.com/user-attachments/assets/86a6098a-e1ee-4336-a131-3f516e8da3cd
 </td>
 <td width="33%">
 
-### Dubbed (French)
+### Dubbed (French) with subtitles
 
 ---
 
 https://github.com/user-attachments/assets/cc63b97d-38f2-440e-bf21-a86c84843838
 
-
-
-[https://path/to/french/video](https://path/to/french/video)
 
 </td>
 </tr>
