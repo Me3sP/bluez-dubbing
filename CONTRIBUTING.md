@@ -8,29 +8,29 @@ All contributions are welcome. Please review the guidelines below before opening
 
 ```mermaid
 flowchart LR
-    A[Media intake<br/>(upload, URL, cache token)] --> B[Workspace setup<br/>+ hash-based caching]
+    A["Media intake<br/>(upload, URL, cache token)"] --> B["Workspace setup<br/>+ hash-based caching"]
     B --> C{audio_sep?}
-    C -->|true| D[Vocal/background stems<br/>`preprocessing.media_separation`]
-    C -->|false| E[Raw waveform reuse]
-    D & E --> F[ASR runner 0<br/>(`ASR_URL` whisperx)]
-    F --> G[Optional diarization & alignment<br/>ASR runner 1]
+    C -->|true| D["Vocal/background stems<br/>`preprocessing.media_separation`"]
+    C -->|false| E["Raw waveform reuse"]
+    D & E --> F["ASR runner 0<br/>(`ASR_URL` whisperx)"]
+    F --> G["Optional diarization & alignment<br/>ASR runner 1"]
     G --> H{target_work}
-    H -->|sub| S1[Subtitle build<br/>`subtitles_handling`]
+    H -->|sub| S1["Subtitle build<br/>`subtitles_handling`"]
     H -->|dub| I{translation_strategy}
-    I -->|default/short| J[Segment-wise translation<br/>aligned ASR segments]
-    I -->|long_*| K[Full-text translation → `alignerWrapper`<br/>`Proportional` / `Sophisticated` aligners]
-    J & K --> L[TTS prompt attachment<br/>`attach_segment_audio_clips`]
-    L --> M[TTS synthesis<br/>`synthesize_tts`]
+    I -->|default/short| J["Segment-wise translation<br/>aligned ASR segments"]
+    I -->|long_*| K["Full-text translation → `alignerWrapper`<br/>`Proportional` / `Sophisticated` aligners"]
+    J & K --> L["TTS prompt attachment<br/>`attach_segment_audio_clips`"]
+    L --> M["TTS synthesis<br/>`synthesize_tts`"]
     M --> N{perform_vad_trimming?}
-    N -->|true| O[Silero VAD tail trim<br/>`trim_tts_segments`]
-    N -->|false| P[Use raw TTS clips]
-    O & P --> Q[Concatenate & stretch segments<br/>`concatenate_audio` (pyrubberband, weighted silence)]
+    N -->|true| O["Silero VAD tail trim<br/>`trim_tts_segments`"]
+    N -->|false| P["Use raw TTS clips"]
+    O & P --> Q["Concatenate & stretch segments<br/>`concatenate_audio` (pyrubberband, weighted silence)"]
     Q --> R{dubbing_strategy}
-    R -->|full_replacement| U[Replace original speech<br/>`apply_audio_to_video`]
+    R -->|full_replacement| U["Replace original speech<br/>`apply_audio_to_video`"]
     R -->|translation_over| S{Sophisticated timing?}
-    S -->|true| T[Envelope-based overlay<br/>`overlay_on_background_sophisticated`]
-    S -->|false| V[Segment overlay + ducking<br/>`overlay_on_background_default`]
-    U & T & V --> W[Final pass<br/>burn subs + mux output]
+    S -->|true| T["Envelope-based overlay<br/>`overlay_on_background_sophisticated`"]
+    S -->|false| V["Segment overlay + ducking<br/>`overlay_on_background_default`"]
+    U & T & V --> W["Final pass<br/>burn subs + mux output"]
     S1 --> W
 ```
 
