@@ -90,6 +90,7 @@ async def test_dub_pipeline_minimal(monkeypatch, tmp_path):
     monkeypatch.setattr(orchestrator_main, "concatenate_segments", fake_concatenate_segments)
     monkeypatch.setattr(orchestrator_main, "align_dubbed_audio", fake_align_dubbed_audio)
     monkeypatch.setattr(orchestrator_main, "finalize_media", fake_finalize_media)
+    monkeypatch.setattr(orchestrator_main, "get_audio_duration", lambda *args, **kwargs: 1.0)  # noqa: ARG005
 
     await orchestrator_main.startup_event()
     try:
@@ -208,6 +209,7 @@ async def test_dub_pipeline_multiple_languages(monkeypatch, tmp_path):
     monkeypatch.setattr(orchestrator_main, "concatenate_segments", fake_concatenate_segments)
     monkeypatch.setattr(orchestrator_main, "align_dubbed_audio", fake_align_dubbed_audio)
     monkeypatch.setattr(orchestrator_main, "finalize_media", fake_finalize_media)
+    monkeypatch.setattr(orchestrator_main, "get_audio_duration", lambda *args, **kwargs: 1.0)  # noqa: ARG005
 
     await orchestrator_main.startup_event()
     try:
