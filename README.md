@@ -75,7 +75,7 @@ bluez-dubbing/
     <td colspan="2" align="center">
       <h3>Original Video</h3>
       <a href="https://github.com/user-attachments/assets/7202fa21-6d69-4c25-a9d5-077b920a3ee8" target="_blank">
-        <img src="https://github.com/user-attachments/assets/53f2df3c-5efa-4a71-9f3c-cf183bb0f542" alt="Original video thumbnail" style="max-width: 800px; width: 100%; border-radius: 12px;">
+        <img src="https://github.com/user-attachments/assets/53f2df3c-5efa-4a71-9f3c-cf183bb0f542" alt="Original video thumbnail" style="max-width: 600px; width: 100%; border-radius: 12px;">
       </a>
     </td>
   </tr>
@@ -83,7 +83,7 @@ bluez-dubbing/
     <td width="50%" align="center" valign="top">
       <h3>Dubbed (English) W/O Subtitles</h3>
       <a href="https://github.com/user-attachments/assets/86a6098a-e1ee-4336-a131-3f516e8da3cd" target="_blank">
-        <img src="THUMB_EN.jpg" alt="Dubbed English thumbnail" style="max-width: 600px; width: 100%; border-radius: 12px;">
+        <img src="https://github.com/user-attachments/assets/53f2df3c-5efa-4a71-9f3c-cf183bb0f542" alt="Dubbed English thumbnail" style="max-width: 600px; width: 100%; border-radius: 12px;">
       </a>
     </td>
     <td width="50%" align="center" valign="top">
