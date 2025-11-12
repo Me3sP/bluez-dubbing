@@ -1,136 +1,136 @@
 languages:
-  - af
-  - sq
-  - am
-  - ar
-  - hy
-  - as
-  - ay
-  - az
-  - bm
-  - eu
-  - be
-  - bn
-  - bho
-  - bs
-  - bg
-  - ca
-  - ceb
-  - ny
-  - zh
-  - co
-  - hr
-  - cs
-  - da
-  - dv
-  - doi
-  - nl
-  - en
-  - eo
-  - et
-  - ee
-  - fil
-  - fi
-  - fr
-  - fy
-  - gl
-  - ka
-  - de
-  - el
-  - gn
-  - gu
-  - ht
-  - ha
-  - haw
-  - he
-  - hi
-  - hmn
-  - hu
-  - is
-  - ig
-  - ilo
-  - id
-  - ga
-  - it
-  - ja
-  - jv
-  - kn
-  - kk
-  - km
-  - rw
-  - kok
-  - ko
-  - kri
-  - ku
-  - ckb
-  - ky
-  - lo
-  - la
-  - lv
-  - ln
-  - lt
-  - lg
-  - lb
-  - mk
-  - mai
-  - mg
-  - ms
-  - ml
-  - mt
-  - mi
-  - mr
-  - mni
-  - lus
-  - mn
-  - my
-  - ne
-  - no
-  - or
-  - om
-  - ps
-  - fa
-  - pl
-  - pt
-  - pa
-  - qu
-  - ro
-  - ru
-  - sm
-  - sa
-  - gd
-  - nso
-  - sr
-  - st
-  - sn
-  - sd
-  - si
-  - sk
-  - sl
-  - so
-  - es
-  - su
-  - sw
-  - sv
-  - tg
-  - ta
-  - tt
-  - te
-  - th
-  - ti
-  - ts
-  - tr
-  - tk
-  - tw
-  - uk
-  - ur
-  - ug
-  - uz
-  - vi
-  - cy
-  - xh
-  - yi
-  - yo
-  - zu
+  - af # Afrikaans
+  - sq # Albanian
+  - am # Amharic
+  - ar # Arabic
+  - hy # Armenian
+  - as # Assamese
+  - ay # Aymara
+  - az # Azerbaijani
+  - bm # Bambara
+  - eu # Basque
+  - be # Belarusian
+  - bn # Bengali
+  - bho # Bhojpuri
+  - bs # Bosnian
+  - bg # Bulgarian
+  - ca # Catalan
+  - ceb # Cebuano
+  - ny # Chichewa
+  - zh # Chinese
+  - co # Corsican
+  - hr # Croatian
+  - cs # Czech
+  - da # Danish
+  - dv # Divehi
+  - doi # Dogri
+  - nl # Dutch
+  - en # English
+  - eo # Esperanto
+  - et # Estonian
+  - ee # Ewe
+  - fil # Filipino
+  - fi # Finnish
+  - fr # French
+  - fy # Frisian
+  - gl # Galician
+  - ka # Georgian
+  - de # German
+  - el # Greek
+  - gn # Guarani
+  - gu # Gujarati
+  - ht # Haitian Creole
+  - ha # Hausa
+  - haw # Hawaiian
+  - he # Hebrew
+  - hi # Hindi
+  - hmn # Hmong
+  - hu # Hungarian
+  - is # Icelandic
+  - ig # Igbo
+  - ilo # Iloko
+  - id # Indonesian
+  - ga # Irish
+  - it # Italian
+  - ja # Japanese
+  - jv # Javanese
+  - kn # Kannada
+  - kk # Kazakh
+  - km # Khmer
+  - rw # Kinyarwanda
+  - kok # Konkani
+  - ko # Korean
+  - kri # Kriol
+  - ku # Kurdish
+  - ckb # Central Kurdish
+  - ky # Kyrgyz
+  - lo # Lao
+  - la # Latin
+  - lv # Latvian
+  - ln # Lingala
+  - lt # Lithuanian
+  - lg # Ganda
+  - lb # Luxembourgish
+  - mk # Macedonian
+  - mai # Maithili
+  - mg # Malagasy
+  - ms # Malay
+  - ml # Malayalam
+  - mt # Maltese
+  - mi # Maori
+  - mr # Marathi
+  - mni # Manipuri
+  - lus # Lushootseed
+  - mn # Mongolian
+  - my # Myanmar (Burmese)
+  - ne # Nepali
+  - no # Norwegian
+  - or # Odia
+  - om # Oromo
+  - ps # Pashto
+  - fa # Persian
+  - pl # Polish
+  - pt # Portuguese
+  - pa # Punjabi
+  - qu # Quechua
+  - ro # Romanian
+  - ru # Russian
+  - sm # Samoan
+  - sa # Sanskrit
+  - gd # Scottish Gaelic
+  - nso # Northern Sotho
+  - sr # Serbian
+  - st # Southern Sotho
+  - sn # Shona
+  - sd # Sindhi
+  - si # Sinhala
+  - sk # Slovak
+  - sl # Slovenian
+  - so # Somali
+  - es # Spanish
+  - su # Sundanese
+  - sw # Swahili
+  - sv # Swedish
+  - tg # Tajik
+  - ta # Tamil
+  - tt # Tatar
+  - te # Telugu
+  - th # Thai
+  - ti # Tigrinya
+  - ts # Tswana
+  - tr # Turkish
+  - tk # Turkmen
+  - tw # Twi
+  - uk # Ukrainian
+  - ur # Urdu
+  - ug # Uyghur
+  - uz # Uzbek
+  - vi # Vietnamese
+  - cy # Welsh
+  - xh # Xhosa
+  - yi # Yiddish
+  - yo # Yoruba
+  - zu # Zulu
 
 
 params:

@@ -1,6 +1,19 @@
 # main config parameters
+TRANSLATION_STRATEGIES:
+  - "default"
+  - "short"
+  - "long_proportional"
+  - "long_sophisticated"
+  - "long_sophisticated_merging"
+
+DUBBING_STRATEGIES:
+  - "default"
+  - "translation_over"
+  - "full_replacement" 
+
 log_level: INFO
 transcript_tolerance: 0.25
+vocal_only_for_transcription: true # whether to preprocess audio to keep only vocal parts for transcription or just use raw audio
 
 concatenation:
   alpha: 0.25

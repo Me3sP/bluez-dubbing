@@ -103,6 +103,7 @@ def _synthesize(req: TTSRequest) -> TTSResponse:
                 start=segment.start,
                 end=segment.end,
                 text=segment.text,
+                audio_prompt_url=segment.audio_prompt_url,
                 audio_url=str(output_file),
                 speaker_id=segment.speaker_id,
                 lang=segment.lang,

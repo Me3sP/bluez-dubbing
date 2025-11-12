@@ -1,4 +1,4 @@
-.PHONY: start-ui start-api stack-up stop restart check-ports test dev dev-up dev-down dev-restart
+.PHONY: start-ui start-api stack-up stop restart check-ports test
 
 ROOT := $(CURDIR)
 BACKEND_ROOT := $(ROOT)/apps/backend
@@ -33,7 +33,7 @@ start-ui:
 	@cd apps/frontend && uv run python -m http.server $(UI_PORT) &
 	@echo "UI running at http://localhost:$(UI_PORT)"
 
-stop dev-down:
+stop:
 	@echo "Stopping Bluez dubbing stack…"
 	@-pkill -f "uvicorn app.main:app" || true
 	@-pkill -f "http.server $(UI_PORT)" || true
@@ -44,15 +44,13 @@ stop dev-down:
 	$(call stop_port,8003)
 	@echo "All services stopped."
 
-restart dev-restart: stop
+restart: stop
 	@sleep 1
 	@$(MAKE) stack-up
 
 restart-ui: stop
 	@sleep 1
 	@$(MAKE) start-ui
-
-dev dev-up: start-ui
 
 check-ports:
 	@echo "Checking port status..."
@@ -70,3 +68,11 @@ test:
 	cd apps/backend/services/translation && $(UV) run --with pytest pytest
 	cd apps/backend/services/tts && $(UV) run --with pytest pytest
 	cd apps/backend/services/orchestrator && $(UV) run --with pytest --with pytest-asyncio pytest
+
+install-dep:
+	@echo "Installing all service dependencies..."
+	@cd apps/backend/services/asr && uv sync
+	@cd apps/backend/services/translation && uv sync
+	@cd apps/backend/services/tts && uv sync
+	@cd apps/backend/services/orchestrator && uv sync
+	@echo "All dependencies installed."

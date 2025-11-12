@@ -64,6 +64,7 @@ class SegmentAudioOut(BaseModel):
     start: float | None = None
     end: float | None = None
     text: str | None = None
+    audio_prompt_url: str | None = None # the audio chunk used as prompt to generate this segment (it will serve for the review stage)
     audio_url: str 
     speaker_id: str | None = None
     lang: str | None = None

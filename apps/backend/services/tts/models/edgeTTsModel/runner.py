@@ -139,6 +139,7 @@ async def synthesize_all(req: TTSRequest, out_format: str, default_voice: str, g
             start=segment.start,
             end=segment.end,
             text=segment.text,
+            audio_prompt_url=segment.audio_prompt_url,
             audio_url=audio_url,
             speaker_id=segment.speaker_id,
             lang=segment.lang,

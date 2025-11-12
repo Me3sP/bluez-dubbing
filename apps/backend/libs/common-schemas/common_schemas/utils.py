@@ -183,9 +183,6 @@ TERMINATORS = {
     ]
 }
 
-TRANSLATION_STRATEGIES = ["default", "short", "long_proportional", "long_sophisticated", "long_sophisticated_merging"]
-DUBBING_STRATEGIES = ["default", "translation_over", "full_replacement"] # if not specified or wrong entry, use "default" that is same as "full_replacement" that is replace original audio with dubbed audio (different from  "translation_over": overlay the dubbed audio on original audio)
-
 # ---- Convert WhisperX result to ASRResponse ----
 def to_word(w: dict, seg_speaker: str | None) -> Word:
     # words can use "word" or "text" as the token key

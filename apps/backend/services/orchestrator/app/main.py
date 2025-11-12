@@ -56,8 +56,6 @@ from common_schemas.utils import (
     alignerWrapper,
     attach_segment_audio_clips,
     map_by_text_overlap,
-    TRANSLATION_STRATEGIES,
-    DUBBING_STRATEGIES,
 )
 from media_processing.audio_processing import (
     concatenate_audio,
@@ -121,6 +119,8 @@ FILE_HASH_CHUNK_SIZE = 4 * 1024 * 1024
 
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv")
 AUDIO_EXTENSIONS = (".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac")
+TRANSLATION_STRATEGIES = general_cfg.get("TRANSLATION_STRATEGIES")
+DUBBING_STRATEGIES = general_cfg.get("DUBBING_STRATEGIES")
 
 PROGRESS_REPORTER: contextvars.ContextVar[Optional[Callable[[Dict[str, Any]], None]]] = contextvars.ContextVar(
     "progress_reporter", default=None
@@ -1004,7 +1004,7 @@ async def regenerate_tts_segment_audio(
                 text=updated_text,
                 speaker_id=state.speaker_id,
                 lang=segment_language,
-                audio_prompt_url=state.audio_url,
+                audio_prompt_url=state.audio_prompt_url,
                 segment_id=segment_id,
                 legacy_audio_path=state.audio_url,
             )
@@ -1721,7 +1721,10 @@ async def dub(
         vocals_path: Optional[Path] = None
         background_path: Optional[Path] = None
 
-        if target_work != "sub": # in subtitle-only mode, no need to separate audio for now: in future we might want to do it for better ASR performance if we succeed to implement automatic noise level detection
+        vocal_for_transcript = general_cfg.get("vocal_only_for_transcription", True)
+        logger.info("Vocal only for transcription: %s", vocal_for_transcript)
+
+        if target_work != "sub" or vocal_for_transcript: # in subtitle-only mode, no need to separate audio for now: in future we might want to do it for better ASR performance if we succeed to implement automatic noise level detection
             with step_timer.time("audio_separation"):
 
                 vocals_path, background_path, dubbing_strategy = await maybe_run_audio_separation(
@@ -1732,10 +1735,12 @@ async def dub(
                     dubbing_strategy,
                 )
 
+        transcript_audio = vocals_path if vocals_path and vocal_for_transcript else raw_audio_path
+
         with step_timer.time("asr"):
             raw_asr_result, aligned_asr_result = await run_asr_step(
                 client,
-                raw_audio_path,
+                transcript_audio,
                 asr_model,
                 source_lang,
                 min_speakers,

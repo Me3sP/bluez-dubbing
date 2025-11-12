@@ -1,105 +1,105 @@
 # ========================================================== YAML Facebook M2M100 configuration file ==================================
 languages:
-  - af
-  - am
-  - ar
-  - ast
-  - az
-  - ba
-  - be
-  - bg
-  - bn
-  - br
-  - bs
-  - ca
-  - ceb
-  - cs
-  - cy
-  - da
-  - de
-  - el
-  - en
-  - es
-  - et
-  - fa
-  - ff
-  - fi
-  - fr
-  - fy
-  - ga
-  - gd
-  - gl
-  - gu
-  - ha
-  - he
-  - hi
-  - hr
-  - ht
-  - hu
-  - hy
-  - id
-  - ig
-  - ilo
-  - is
-  - it
-  - ja
-  - jv
-  - ka
-  - kk
-  - km
-  - kn
-  - ko
-  - lb
-  - lg
-  - ln
-  - lo
-  - lt
-  - lv
-  - mg
-  - mk
-  - ml
-  - mn
-  - mr
-  - ms
-  - my
-  - ne
-  - nl
-  - no
-  - ns
-  - oc
-  - or
-  - pa
-  - pl
-  - ps
-  - pt
-  - ro
-  - ru
-  - sd
-  - si
-  - sk
-  - sl
-  - so
-  - sq
-  - sr
-  - ss
-  - su
-  - sv
-  - sw
-  - ta
-  - th
-  - tl
-  - tn
-  - tr
-  - uk
-  - ur
-  - uz
-  - vi
-  - wo
-  - xh
-  - yi
-  - yo
-  - zh
-  - zu
+  - af # Afrikaans
+  - am # Amharic
+  - ar # Arabic
+  - ast # Asturleonese
+  - az # Azerbaijani
+  - ba # Bashkir
+  - be # Belarusian
+  - bg # Bulgarian
+  - bn # Bengali
+  - br # Breton
+  - bs # Bosnian
+  - ca # Catalan
+  - ceb # Cebuano
+  - cs # Czech
+  - cy # Welsh
+  - da # Danish
+  - de # German
+  - el # Greek
+  - en # English
+  - es # Spanish
+  - et # Estonian
+  - fa # Persian
+  - ff # Fulah
+  - fi # Finnish
+  - fr # French
+  - fy # Frisian
+  - ga # Irish
+  - gd # Scottish Gaelic
+  - gl # Galician
+  - gu # Gujarati
+  - ha # Hausa
+  - he # Hebrew
+  - hi # Hindi
+  - hr # Croatian
+  - ht # Haitian Creole
+  - hu # Hungarian
+  - hy # Armenian
+  - id # Indonesian
+  - ig # Igbo
+  - ilo # Iloko
+  - is # Icelandic
+  - it # Italian
+  - ja # Japanese
+  - jv # Javanese
+  - ka # Georgian
+  - kk # Kazakh
+  - km # Khmer
+  - kn # Kannada
+  - ko # Korean
+  - lb # Luxembourgish
+  - lg # Ganda
+  - ln # Lingala
+  - lo # Lao
+  - lt # Lithuanian
+  - lv # Latvian
+  - mg # Malagasy
+  - mk # Macedonian
+  - ml # Malayalam
+  - mn # Mongolian
+  - mr # Marathi
+  - ms # Malay
+  - my # Myanmar (Burmese)
+  - ne # Nepali
+  - nl # Dutch
+  - no # Norwegian
+  - ns # Northern Sotho
+  - oc # Occitan
+  - or # Odia
+  - pa # Punjabi
+  - pl # Polish
+  - ps # Pashto
+  - pt # Portuguese
+  - ro # Romanian
+  - ru # Russian
+  - sd # Sindhi
+  - si # Sinhala
+  - sk # Slovak
+  - sl # Slovenian
+  - so # Somali
+  - sq # Albanian
+  - sr # Serbian
+  - ss # Swati
+  - su # Sundanese
+  - sv # Swedish
+  - sw # Swahili
+  - ta # Tamil
+  - th # Thai
+  - tl # Tagalog
+  - tn # Tongan
+  - tr # Turkish
+  - uk # Ukrainian
+  - ur # Urdu
+  - uz # Uzbek
+  - vi # Vietnamese
+  - wo # Wolof
+  - xh # Xhosa
+  - yi # Yiddish
+  - yo # Yoruba
+  - zh # Chinese
+  - zu # Zulu
 
 
 params:

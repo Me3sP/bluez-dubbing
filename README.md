@@ -1,78 +1,71 @@
-<div style="
-  margin: 32px auto;
-  padding: 36px 42px;
-  max-width: 1080px;
-  border-radius: 24px;
-  background: linear-gradient(135deg, #313338 0%, #232428 35%, #1e1f22 100%);
-  color: #f2f3f5;
-  font-family: 'Inter', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
-  border: 1px solid rgba(80, 82, 87, 0.45);
-">
-  <div style="display:flex; align-items:center; gap:14px; margin-bottom:28px;">
-    <img src="apps/frontend/assets/icon.png"
-         alt="Bluez icon"
-         style="height:64px; width:64px; border-radius:16px; object-fit:cover; box-shadow:0 8px 18px rgba(0,0,0,0.4);">
-    <img src="apps/frontend/assets/logo.png"
-         alt="Bluez logo"
-         style="height:64px;">
-  </div>
-  <h1 style="margin:0 0 8px; font-size:2.75rem; letter-spacing:-0.015em;">Bluez-Dubbing: Multilingual AI Dubbing System</h1>
-  <p style="margin:0; font-size:1.05rem; color:#b5bac1;">
-    Choose your mode, dub in any language, enjoy crystal-clear vocals.
-  </p>
-</div>
 
-Bluez-Dubbing is a modular, production-ready pipeline for **automatic video dubbing** and **subtitle generation**. It leverages state-of-the-art models for ASR (Automatic Speech Recognition), translation, and TTS (Text-to-Speech), supporting advanced features like audio source separation, VAD-based audio length adjustment, differents sophisticated dubbing strategies, and customizable subtitle styles.
+
+---
+
+# 🪄 Bluez-Dubbing: Multilingual AI Dubbing System
+
+<picture> <source media="(prefers-color-scheme: dark)" srcset="apps/frontend/assets/icon.png"> <source media="(prefers-color-scheme: light)" srcset="apps/frontend/assets/icon2.png"> <img src="apps/frontend/assets/icon-light.png" width="64" height="64" alt="Bluez icon"> </picture> <picture> <source media="(prefers-color-scheme: dark)" srcset="apps/frontend/assets/logo.png"> <source media="(prefers-color-scheme: light)" srcset="apps/frontend/assets/logo2.png"> <img src="apps/frontend/assets/logo-light.png" width="400" height="64" alt="Bluez logo"> </picture>
+
+<!-- <div>
+  <img src="apps/frontend/assets/icon2.png" alt="Bluez icon" width="64" height="64">
+  <img src="apps/frontend/assets/logo2.png" alt="Bluez logo" width="400" height="64">
+</div> -->
+
+
+[![Python](https://img.shields.io/badge/Python-3.11%2B-blue?logo=python)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688?logo=fastapi)](https://fastapi.tiangolo.com/)
+[![License](https://img.shields.io/badge/License-Apache_2.0-green.svg)](LICENSE)
+[![uv](https://img.shields.io/badge/Package_Manager-uv-black?logo=astral\&logoColor=white)](https://docs.astral.sh/uv/)
+[![FFmpeg](https://img.shields.io/badge/Powered_by-FFmpeg-red?logo=ffmpeg)](https://ffmpeg.org/)
+
+> 🎧 *Choose your mode, dub in any language, and enjoy crystal-clear vocals.*
+---
+
+**Bluez-Dubbing** is a modular, production-ready pipeline for **automatic video dubbing** and **subtitle generation**.
+It integrates state-of-the-art models for **ASR** (Automatic Speech Recognition), **translation**, and **TTS** (Text-to-Speech), supporting features like:
+
+* audio source separation
+* VAD-based duration alignment
+* sophisticated dubbing strategies
+* customizable subtitle styles
 
 ---
 
 ## 🚀 Features
 
-- **End-to-End Dubbing:** From video/audio input to fully dubbed output with burned-in subtitles.
-- **Support different task:** video dubbing W or W/O subtitle, audio translation, just subtitling ..
-- **REST API & CLI:** FastAPI endpoints plus command-line tooling for automation.
-- **Web UI (independent app):** A standalone Web UI who permit you to use the dubbing system backend in a more convenient way with more ease and give you advance monitoring ability on the dubbing process if you want.
-
-    **1)** You can uploads media, or paste link from a youtube or a social media platform (thanks to yt-dlp), select your options and it the <div style = "display: inline; border: none;border-radius: 999px;padding: 15px 15px;font-size: 1rem;font-weight: 600;cursor: pointer;background: linear-gradient(135deg, #5865F2, #4752C4);color: #fff;">Run dubbing</div> button and that is it.
-
-    **2)** there is 2 functionnement mode: 
-      
-      - the **LAZY-MODE** that is the default(you just lunch and watch it process till the end in full automation and get your final result)
-      - the **INVOLVE-MODE** A elevenlab dubbing studio like mode where you can have a look between the different stage and adjust to you conveniance the result to meet you expectation since the AI models are not fully perfect. for very important project it might be needed.
-
-- **Modular Services:** Pluggable ASR, translation, and TTS models—easily extend or swap components.
-- **Flexible Translation Strategies:** Segment-wise or full-text translation with smart alignment for good sync with original video flow.
-- **Differents audio synchronisation strategies:** Different synchronisation algorithm for seamless and natural audio replacement.
-- **Advanced Dubbing:** Full replacement of original audio with exact background recovery or overlay strategies, with sophisticated timing.
-- **Subtitle Generation:** Multiple styles (e.g., Netflix_mobile, bold_desktop ..) and formats (SRT, VTT, ASS).
-
+* **End-to-End Dubbing:** From video/audio input to fully dubbed output with burned-in subtitles.
+* **Multiple Modes:** Video dubbing (with or without subtitles), audio translation, or subtitling only.
+* **REST API & CLI:** FastAPI endpoints and command-line tools for automation.
+* **Independent Web UI:** A dedicated app offering an intuitive experience and live progress tracking. See [Web UI](#web-ui) for details.  
+* **Modular Services:** Easily plug, swap, or extend ASR, translation, and TTS models.
+* **Flexible Translation:** Segment-wise or full-text translation with smart synchronization.
+* **Advanced Audio Synchronization:** Multiple algorithms for seamless and natural voice replacement.
+* **Subtitle Generation:** Netflix-style, bold-desktop, or mobile-optimized SRT/VTT/ASS output.
 
 ---
 
 ## 🗂️ Project Structure
 
-```
+```bash
 bluez-dubbing/
-│
 ├── apps/
 │   ├── backend/
-│   │   ├── cache/             # Raw Audio/Background/Vocal caches and intermediates
+│   │   ├── cache/              # Cached audio/background/intermediate data
 │   │   ├── libs/
-│   │   │   └── common-schemas/ # Shared Pydantic models, config, and utilities
-│   │   ├── models_cache/      # Downloaded model weights and configs
-│   │   ├── outs/              # Output workspaces for each job
+│   │   │   └── common-schemas/ # Shared Pydantic models & utilities
+│   │   ├── models_cache/       # Downloaded model weights/configs
+│   │   ├── outs/               # Output workspaces per job
 │   │   ├── services/
-│   │   │   ├── asr/           # ASR service (WhisperX, etc.)
-│   │   │   ├── orchestrator/  # Main API and pipeline logic
-│   │   │   ├── translation/   # Translation service (deep_translator, etc.)
-│   │   │   └── tts/           # TTS service (Edge TTS, chatterbox etc.)
-│   │   └── uploads/           # Cached media uploaded through the UI
+│   │   │   ├── asr/            # ASR (WhisperX, etc.)
+│   │   │   ├── orchestrator/   # Main API & pipeline logic
+│   │   │   ├── translation/    # Translation service
+│   │   │   └── tts/            # TTS service
+│   │   └── uploads/            # Uploaded media from the UI
 │   └── frontend/
-│           ├── assets/        # UI icons and branding
-│           ├── scripts/       # js modules for the web-UI
-│           ├── styles/        # Main style sheet
-│           └── index.html     # web application
+│       ├── assets/             # UI icons and branding
+│       ├── scripts/            # JS modules for the Web UI
+│       ├── styles/             # Stylesheets
+│       └── index.html          # Web application entry
 ├── Makefile
 └── README.md
 ```
@@ -81,207 +74,269 @@ bluez-dubbing/
 
 ## 📽️ Demo
 
+<table>
+<tr>
+<td width="33%">
 
+### Original Video
+
+---
+
+[https://path/to/original/video](https://path/to/original/video)
+
+</td>
+<td width="33%">
+
+### Dubbed (English)
+
+---
+
+[https://path/to/english/video](https://path/to/english/video)
+
+</td>
+<td width="33%">
+
+### Dubbed (French)
+
+---
+
+[https://path/to/french/video](https://path/to/french/video)
+
+</td>
+</tr>
+</table>
+
+---
 
 ## ⚡ Quickstart
 
-### 1. **Clone the Repository**
+### 1. Clone the Repository
 
 ```bash
 git clone https://github.com/your-org/bluez-dubbing.git
 cd bluez-dubbing
 ```
 
-### 2. **Install Dependencies (uv)**
+### 2. Install Dependencies (via `uv`)
 
-Install the project's virtual environments and dependencies in one pass using [`uv`](https://github.com/astral-sh/uv):
+Ensure [`ffmpeg`](https://ffmpeg.org/download.html) and [`uv`](https://docs.astral.sh/uv/getting-started/installation/) are installed.
+Linux example:
 
 ```bash
+sudo apt update && sudo apt install ffmpeg -y
+sudo apt install uv
+```
+
+> **Note:** Some tokenizers (e.g. `mecab-python3` for Japanese) require a JVM to be installed.
+
+To install dependencies for any service:
+
+```bash
+cd apps/backend/services/<serviceName>
 uv sync
 ```
 
-This installs all service dependencies (ASR, translation, TTS, orchestrator) into their dedicated `.venv` folders.
-
-### 3. **Configure Environment**
-
-- Copy `.env.example` to `.env` and provide provider keys (DeepL, Azure, etc.).
-- Place required model weights in `models_cache/`.
-
-### 4. **Run the Backend Stack**
-
-Launch every backend microservice with the bundled `Makefile` target:
+Or for all at once:
 
 ```bash
-make stack-up   # starts ASR, translation, TTS, and orchestrator services
+make install-dep
 ```
 
-Stop everything:
+This sets up `.venv` environments for each service (ASR, translation, TTS, orchestrator).
+
+**Dependency notes:**
+
+* If `onnx` and `ml_dtypes` conflict, run:
+
+  ```bash
+  uv lock --upgrade-package ml_dtypes==0.5.3 && uv sync
+  ```
+* Chatterbox pins `torch==2.6.0`. If your GPU requires a newer version:
+
+  ```bash
+  uv pip uninstall torch torchaudio
+  uv pip install torch==2.8.0 torchaudio==2.8.0
+  ```
+
+  For CUDA:
+
+  ```bash
+  uv pip install torch==2.8.0 torchaudio==2.8.0 \
+    --index-url https://download.pytorch.org/whl/cu12x
+  ```
+
+  ⚠️ Don’t re-run `uv sync` afterwards, as it will downgrade again.
+
+### 3. Configure Environment
+
+* Copy `.env.example` → `.env`
+* Set required variables (`HF_TOKEN`, `ORCHESTRATOR_ALLOWED_ORIGINS`, etc.)
+* Place model weights in `models_cache/`
+
+### 4. Run the Backend Stack
 
 ```bash
+make start-api      # Launch orchestrator only
+make stack-up       # Launch ASR, translation, TTS, orchestrator
+make stop           # Stop all services
+make restart        # Restart everything
+```
+
+### 5. Serve the Frontend UI
+
+```bash
+make start-ui
+```
+
+Default URL: `http://localhost:5173`
+The UI connects to the backend at `http://localhost:8000/api`.
+To change it:
+
+```js
+localStorage.setItem("bluez-backend-base", "https://your-host/api");
+```
+
+Restart or stop with:
+
+```bash
+make restart-ui
 make stop
 ```
-
-### 5. **Serve the Frontend UI**
-
-The UI is now a standalone static app. Serve it with any static file server (Python example below):
-
-```bash
-cd apps/frontend/public
-python -m http.server 5173
-```
-
-- The UI expects the backend at `http://localhost:8000/api` by default.  
-- To point it elsewhere, set `window.BLUEZ_API_BASE` in the browser console or store a value in `localStorage.setItem("bluez-backend-base", "https://your-host/api")`.
 
 ---
 
 ## 🛠️ Usage
 
-### **Web UI**
+### Web UI
 
-After serving the frontend (see Step 5), open the URL exposed by your static server (for the Python example, `http://localhost:5173`).  
-The UI communicates exclusively with the backend REST API (`http://localhost:8000/api` by default):
+![UI Screenshot](<Screenshot 2025-11-12 121321.png>)
 
-- Upload local media **or** provide a public link (YouTube, Instagram, TikTok…)—downloads stream via `yt-dlp` with a live progress bar.
-- Review smart suggestions for source/target languages and pick models per stage.
-- Track every pipeline step in the live log, including ASR, translation, TTS, and separation.
-- Preview the uploaded source and generated outputs inline, then download intermediates through REST-served links.
+After serving the frontend:
 
-Dark/light themes and the responsive layout remain unchanged.
+* Upload a file or paste a video link (YouTube, Instagram, TikTok…)
+* Adjust model and dubbing parameters or use auto-selection and hit the run dubbing pipeline that's it!
+* Watch live logs (ASR → Translation → TTS → Merge)
+* Preview or download results
+* Choose **Lazy Mode** (fully automatic) or **Involve Mode** (manual fine-tuning)
+* Toggle “Keep Intermediate Artefacts” to retain separated tracks or transcripts
 
-### **API Example**
-
-Submit a dubbing job via HTTP:
+### API Example
 
 ```bash
 curl -X POST -G 'http://localhost:8000/v1/dub' \
   --data-urlencode 'video_url=/path/to/video.mp4' \
-  --data-urlencode 'target_lang=fr' \
-  --data-urlencode 'source_lang=en' \
-  --data-urlencode 'sep_model=melband_roformer_big_beta5e.ckpt' \
+  --data-urlencode 'target_work=dub' \
+  --data-urlencode 'target_langs=fr' \
   --data-urlencode 'asr_model=whisperx' \
   --data-urlencode 'tr_model=deep_translator' \
   --data-urlencode 'tts_model=edge_tts' \
-  --data-urlencode 'audio_sep=true' \
   --data-urlencode 'perform_vad_trimming=true' \
-  --data-urlencode 'translation_strategy=short' \
   --data-urlencode 'dubbing_strategy=full_replacement' \
   --data-urlencode 'sophisticated_dub_timing=true' \
-  --data-urlencode 'subtitle_style=netflix_mobile'
+  --data-urlencode 'subtitle_style=netflix_mobile' \
+  --data-urlencode 'persist_intermediate=false'
 ```
 
-- See `/v1/dub` endpoint in `apps/backend/services/orchestrator/app/main.py` for all parameters.
+Outputs are saved to `apps/backend/outs/<workspace_id>/`.
 
-### **Output**
+---
 
-- All results (final video, audio, subtitles, intermediates) are saved in `apps/backend/outs/<workspace_id>/`.
+## 💻 CLI Tools
 
-### **Command-Line Interface**
-
-The orchestrator can also be triggered directly without spinning up the HTTP server:
+Each microservice has its own CLI for debugging or running isolated stages:
 
 ```bash
-cd bluez-dubbing/apps/backend
-uv run python -m services.orchestrator.cli \
-  /path/to/video.mp4 \
-  --target-lang fr \
-  --translation-strategy default \
-  --output-json ./run-result.json
-```
-
-Run `uv run python -m services.orchestrator.cli --help` to see all available flags.
-
-Additional service-level CLIs are available for debugging individual stages:
-
-```bash
-# Automatic speech recognition (runs WhisperX worker)
+# ASR
 uv run python -m services.asr.cli /path/to/audio.wav --output-json asr.json
 
-# Translation (works with ASR JSON output)
+# Translation
 uv run python -m services.translation.cli asr.json --target-lang fr --output-json translation.json
 
-# Text-to-speech synthesis (works with translation JSON output)
+# TTS
 uv run python -m services.tts.cli translation.json --workspace ./tts_out --output-json tts.json
 ```
 
-> **Note:** The orchestrator CLI expects the ASR, translation, and TTS services to be reachable (locally or remote). The per-service CLIs above can be used when you want to run individual stages without launching the APIs.
+Run `--help` on any CLI for available flags.
 
-### **Tests**
+---
 
-CLI behavior is covered by pytest-based unit tests. Run them from the repo root:
+## 🧪 Tests
+
+Run tests via:
 
 ```bash
-cd bluez-dubbing
 make test
 ```
 
-The `Makefile` target installs the required test dependencies via `uv` and executes pytest inside the orchestrator service.
+Includes:
 
-- Registry tests (`apps/backend/services/*/tests/test_runner_api.py`) validate that every registered ASR/translation/TTS model executes through the corresponding worker shim—useful when you introduce new model configs.
-- An integration test (`apps/backend/services/orchestrator/tests/test_pipeline_integration.py`) drives the orchestrator pipeline end-to-end with patched dependencies to ensure the FastAPI logic and workspace handling remain consistent.
+* unit tests for service CLIs
+* registry validation (ensures all registered models run properly)
+* end-to-end integration test for the orchestrator pipeline
 
-### **Continuous Integration**
+---
 
-The repository ships with a GitHub Actions workflow (`.github/workflows/ci.yml`) that runs automatically on pushes and pull requests. The pipeline:
+## ⚙️ Continuous Integration
 
-- sets up Python 3.11 and installs `uv`;
-- executes `make test`, which drives the per-service CLI tests, the worker-registry coverage (ensuring every registered ASR/translation/TTS model executes), and the orchestrator pipeline integration test.
+GitHub Actions workflow (`.github/workflows/ci.yml`) automatically:
 
-No additional secrets are required. Ensure new code keeps the test matrix green by running `make test` locally before opening a pull request.
+* sets up Python 3.11 + `uv`
+* runs `make test`
+* validates model registries and pipeline integration
+
+Ensure your PRs keep all tests green.
 
 ---
 
 ## 🧩 Supported Models
 
-- **ASR:** [WhisperX](https://github.com/m-bain/whisperx), extendable via `services/asr/app/registry.py`
-- **Translation:** [deep_translator](https://github.com/nidhaloff/deep-translator), Facebook M2M100, etc.
-- **TTS:** Edge TTS, Chatterbox, and more.
+* **ASR:** [WhisperX](https://github.com/m-bain/whisperx)
+* **Translation:** [deep-translator](https://github.com/nidhaloff/deep-translator), M2M100, etc.
+* **TTS:** Edge TTS, Chatterbox, and more
+
+- **ASR:** WhisperX out of the box; extend via `services/asr/app/registry.py`.
+- **Translation:** `deep_translator`, M2M100, and pluggable custom translators.
+- **TTS:** Edge TTS, Chatterbox, plus any custom registry entry.
+
 
 See `libs/common-schemas/config/` for model configs and supported languages.
 
 ---
 
-## 📝 Configuration
-
-- **Model configs:** `libs/common-schemas/config/*.yaml`
-- **Environment variables:** `.env` (API keys, etc.)
-
----
-
-## 🧪 Testing
-
-- Unit and integration tests are recommended for each service.
-- Use FastAPI’s `/docs` for interactive API testing.
-
----
-
 ## 🧠 Extending
 
-- **Add new models:** Register in the appropriate service’s `registry.py` and add a config YAML.
-- **Custom pipelines:** Modify `apps/backend/services/orchestrator/app/main.py` for new strategies or steps.
+Add new models via each service’s `registry.py` and model folder see [CONTRIBUTING.md](CONTRIBUTING.md) for more details
 
 ---
 
 ## 🤝 Contributing
 
-Pull requests and issues are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions are welcome!
+Please read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting PRs or issues.
 
 ---
 
 ## 📄 License
 
-[MIT License](LICENSE)
+Licensed under the [Apache License 2.0](LICENSE).
 
 ---
 
 ## 🙏 Acknowledgements
 
-- [WhisperX](https://github.com/m-bain/whisperx)
-- [deep-translator](https://github.com/nidhaloff/deep-translator)
-- [Edge TTS](https://github.com/rany2/edge-tts)
-- And all open-source contributors!
+Thanks to these open-source projects:
+
+* [FFmpeg](https://github.com/FFmpeg/FFmpeg)
+* [WhisperX](https://github.com/m-bain/whisperx)
+* [pyannote-audio](https://github.com/pyannote/pyannote-audio)
+* [deep-translator](https://github.com/nidhaloff/deep-translator)
+* [Edge-TTS](https://github.com/rany2/edge-tts)
+* [yt-dlp](https://github.com/yt-dlp/yt-dlp)
+* [Chatterbox](https://github.com/resemble-ai/chatterbox)
 
 ---
 
-**Contact:**  
-For questions or support, open an issue or contact the maintainer.
+**Contact:**
+📧 [contactglobluez@gmail.com](mailto:contactglobluez@gmail.com)
+
+---
