@@ -16,7 +16,7 @@ from common_schemas.models import SegmentAudioIn, TTSRequest, TTSResponse
 def test_tts_call_worker(monkeypatch, model_key):
     request = TTSRequest(segments=[SegmentAudioIn(text="hello")], workspace="/tmp", language="en")
 
-    def fake_run(cmd, input, capture_output, cwd):  # noqa: ANN001
+    def fake_run(*_args, **_kwargs):  # noqa: ANN001
         return type(
             "Proc",
             (),

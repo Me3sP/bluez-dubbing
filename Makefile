@@ -6,6 +6,7 @@ PYTHONPATH_BASE := $(BACKEND_ROOT):$(ROOT)
 UV ?= uv
 RELOAD ?= --reload
 UI_PORT ?= 5173
+export UV_CACHE_DIR := $(ROOT)/.uv_cache
 
 define start_service
 	@echo "▶ starting $(1) service on port $(2)"

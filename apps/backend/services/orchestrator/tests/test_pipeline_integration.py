@@ -96,7 +96,7 @@ async def test_dub_pipeline_minimal(monkeypatch, tmp_path):
         result = await orchestrator_main.dub(
             video_url=str(input_wav),
             target_work="dub",
-            target_lang="fr",
+            target_langs=["fr"],
             source_lang="en",
             translation_strategy="default",
             dubbing_strategy="default",
@@ -105,6 +105,12 @@ async def test_dub_pipeline_minimal(monkeypatch, tmp_path):
             audio_sep=False,
             perform_vad_trimming=False,
             persist_intermediate=False,
+            sep_model="melband_roformer_big_beta5e.ckpt",
+            asr_model="whisperx",
+            tr_model="facebook_m2m100",
+            tts_model="chatterbox",
+            run_id=None,
+            involve_mode=False,
         )
     finally:
         await orchestrator_main.shutdown_event()
@@ -217,6 +223,12 @@ async def test_dub_pipeline_multiple_languages(monkeypatch, tmp_path):
             audio_sep=False,
             perform_vad_trimming=False,
             persist_intermediate=False,
+            sep_model="melband_roformer_big_beta5e.ckpt",
+            asr_model="whisperx",
+            tr_model="facebook_m2m100",
+            tts_model="chatterbox",
+            run_id=None,
+            involve_mode=False,
         )
     finally:
         await orchestrator_main.shutdown_event()

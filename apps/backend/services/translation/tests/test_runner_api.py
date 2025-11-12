@@ -16,7 +16,7 @@ from common_schemas.models import ASRResponse, TranslateRequest
 def test_translation_call_worker(monkeypatch, model_key):
     request = TranslateRequest(segments=[], source_lang="en", target_lang="fr")
 
-    def fake_run(cmd, input, capture_output, cwd):  # noqa: ANN001
+    def fake_run(*_args, **_kwargs):  # noqa: ANN001
         return type(
             "Proc",
             (),
