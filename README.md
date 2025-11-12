@@ -70,8 +70,8 @@ bluez-dubbing/
 ## 📽️ Demo
 
 <table>
-<tr>
-<td width="33%">
+  <tr>
+    <td colspan="2" align="center">
 
 ### Original Video
 
@@ -79,27 +79,28 @@ bluez-dubbing/
 
 https://github.com/user-attachments/assets/7202fa21-6d69-4c25-a9d5-077b920a3ee8
 
-</td>
-<td width="33%">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
 
-### Dubbed (English)
+### Dubbed (English) W/O subtitles
 
 ---
 
 https://github.com/user-attachments/assets/86a6098a-e1ee-4336-a131-3f516e8da3cd
 
-</td>
-<td width="33%">
+    </td>
+    <td width="50%">
 
-### Dubbed (French)
+### Dubbed (French) with subtitles
 
 ---
 
 https://github.com/user-attachments/assets/cc63b97d-38f2-440e-bf21-a86c84843838
 
-
-</td>
-</tr>
+    </td>
+  </tr>
 </table>
 
 
