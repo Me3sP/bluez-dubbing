@@ -2,14 +2,9 @@
 
 ---
 
-# 🪄 Bluez-Dubbing: Multilingual AI Dubbing System
+# **Multilingual AI Dubbing System**
 
 <picture> <source media="(prefers-color-scheme: dark)" srcset="apps/frontend/assets/icon.png"> <source media="(prefers-color-scheme: light)" srcset="apps/frontend/assets/icon2.png"> <img src="apps/frontend/assets/icon-light.png" width="64" height="64" alt="Bluez icon"> </picture> <picture> <source media="(prefers-color-scheme: dark)" srcset="apps/frontend/assets/logo.png"> <source media="(prefers-color-scheme: light)" srcset="apps/frontend/assets/logo2.png"> <img src="apps/frontend/assets/logo-light.png" width="400" height="64" alt="Bluez logo"> </picture>
-
-<!-- <div>
-  <img src="apps/frontend/assets/icon2.png" alt="Bluez icon" width="64" height="64">
-  <img src="apps/frontend/assets/logo2.png" alt="Bluez logo" width="400" height="64">
-</div> -->
 
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue?logo=python)](https://www.python.org/)
@@ -206,6 +201,7 @@ make stop
 ---
 
 ## 🛠️ Usage
+> See [CONTRIBUTING](CONTRIBUTING.md) for a full explanation of parameters and tuning guidance. Defaults work for most cases, and the models automatically adjust when needed.
 
 ### Web UI
 
