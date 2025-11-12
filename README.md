@@ -72,36 +72,37 @@ bluez-dubbing/
 <table>
   <tr>
     <td colspan="2" align="center">
-
-### Original Video
-
----
-
-https://github.com/user-attachments/assets/7202fa21-6d69-4c25-a9d5-077b920a3ee8
-
+      <h3>Original Video</h3>
+      <hr>
+      <p>
+        <a href="https://github.com/user-attachments/assets/7202fa21-6d69-4c25-a9d5-077b920a3ee8" target="_blank">
+          https://github.com/user-attachments/assets/7202fa21-6d69-4c25-a9d5-077b920a3ee8
+        </a>
+      </p>
     </td>
   </tr>
   <tr>
     <td width="50%">
-
-### Dubbed (English) W/O subtitles
-
----
-
-https://github.com/user-attachments/assets/86a6098a-e1ee-4336-a131-3f516e8da3cd
-
+      <h3>Dubbed (English) W/O Subtitles</h3>
+      <hr>
+      <p>
+        <a href="https://github.com/user-attachments/assets/86a6098a-e1ee-4336-a131-3f516e8da3cd" target="_blank">
+          https://github.com/user-attachments/assets/86a6098a-e1ee-4336-a131-3f516e8da3cd
+        </a>
+      </p>
     </td>
     <td width="50%">
-
-### Dubbed (French) with subtitles
-
----
-
-https://github.com/user-attachments/assets/cc63b97d-38f2-440e-bf21-a86c84843838
-
+      <h3>Dubbed (French) With Subtitles</h3>
+      <hr>
+      <p>
+        <a href="https://github.com/user-attachments/assets/cc63b97d-38f2-440e-bf21-a86c84843838" target="_blank">
+          https://github.com/user-attachments/assets/cc63b97d-38f2-440e-bf21-a86c84843838
+        </a>
+      </p>
     </td>
   </tr>
 </table>
+
 
 
 
