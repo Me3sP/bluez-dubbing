@@ -73,7 +73,7 @@ bluez-dubbing/
 <table>
   <tr>
     <td width="33%"  align="center" valign="top">
-      <h3>Original Video</h3>
+      <h3>Original Video (chinese)</h3>
       <a href="https://github.com/user-attachments/assets/7202fa21-6d69-4c25-a9d5-077b920a3ee8" target="_blank">
         <img src="https://github.com/user-attachments/assets/53f2df3c-5efa-4a71-9f3c-cf183bb0f542" alt="Original video thumbnail" style="max-width: 600px; width: 100%; border-radius: 12px;">
       </a>
