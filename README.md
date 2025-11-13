@@ -139,14 +139,16 @@ This sets up `.venv` environments for each service (ASR, translation, TTS, orche
   ```bash
   uv lock --upgrade-package ml_dtypes==0.5.3 && uv sync
   ```
-* Chatterbox pins `torch==2.6.0`. If your GPU requires a newer version:
+
+* Chatterbox pins `torch==2.6.0` / `torchaudio==2.6.0`.
+  If your hardware needs newer versions (e.g., RTX 5080 GPUs require ≥ 2.8.0):
 
   ```bash
   uv pip uninstall torch torchaudio
   uv pip install torch==2.8.0 torchaudio==2.8.0
   ```
 
-  For CUDA:
+  For CUDA wheels (Windows or manual install):
 
   ```bash
   uv pip install torch==2.8.0 torchaudio==2.8.0 \
